@@ -1,0 +1,41 @@
+# ============================================================================
+# 主链（Android / KMP）唯一版本源。
+# 根 build.gradle.kts 通过 alias(libs.plugins.xxx) 引用，子模块只写插件 id 不带版本。
+# 改插件版本只改这里。
+#
+# 注意：鸿蒙(ohos)链是另一条独立构建（settings.ohos.gradle.kts + build.ohos.gradle.kts），
+#      它的 Kotlin 必须用 KBA/ohos 专用版本，与本文件故意不一致，不要在此统一。
+#
+# 注意：kotlin 版本需与 buildSrc/src/main/java/KotlinBuildVar.kt 中的
+#      KOTLIN_VERSION(决定 com.tencent.kuikly-open:* 的版本后缀) 保持一致。
+# ============================================================================
+
+[versions]
+# 插件版本
+agp = "8.9.0"
+kotlin = "2.1.21"
+ksp = "2.1.21-2.0.1"
+
+# androidApp 依赖版本
+recyclerview = "1.2.1"
+appcompat = "1.3.1"
+coreKtx = "1.6.0"
+dynamicanimation = "1.0.0"
+picasso = "2.71828"
+glide = "4.12.0"
+
+[libraries]
+androidx-recyclerview = { module = "androidx.recyclerview:recyclerview", version.ref = "recyclerview" }
+androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-dynamicanimation = { module = "androidx.dynamicanimation:dynamicanimation", version.ref = "dynamicanimation" }
+picasso = { module = "com.squareup.picasso:picasso", version.ref = "picasso" }
+glide = { module = "com.github.bumptech.glide:glide", version.ref = "glide" }
+glide-compiler = { module = "com.github.bumptech.glide:compiler", version.ref = "glide" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

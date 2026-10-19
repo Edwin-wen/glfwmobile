@@ -1,4 +1,4 @@
-# Kuikly 原生 OpenGL 画布（CanvasGLView）跨端实现与验证
+# Kuikly 原生画布（CanvasGLView）跨端实现与验证
 
 > 目标：Kuikly 新增 `main` 页（按钮）→ 跳转 `canvas` 页（整页原生 OpenGL 红色画布），
 > 该自定义 View 在 **Android / iOS / 鸿蒙 / H5 / 微信小程序** 五端各自用平台图形能力实现；
@@ -23,8 +23,8 @@ Kuikly 跨端自定义 View 的机制是：**业务层只声明一个 `viewName`
      ┌──────────┬───────────┼───────────┬──────────────┐
      ▼          ▼           ▼           ▼              ▼
   Android      iOS        鸿蒙         H5          小程序
- GLSurface   CAEAGLLayer  XComponent  <canvas>   <canvas
- View+ES2    +EAGLContext  +native     +WebGL     type="webgl">
+ GLSurface   CAMetalLayer XComponent  <canvas>   <canvas
+ View+ES2     +MTLDevice   +native     +WebGL     type="webgl">
                           EGL/GLES3
 ```
 
@@ -160,12 +160,15 @@ override fun registerExternalRenderView(kuiklyRenderExport: IKuiklyRenderExport)
 
 已知限制：`GLSurfaceView` 用独立 Surface 渲染，不支持圆角与半透明叠加，适合本场景的整页铺满。
 
-### 4.2 iOS：UIView + CAEAGLLayer / EAGLContext
+### 4.2 iOS：UIView + CAMetalLayer / Metal
 
 文件：`iosApp/iosApp/KuiklyExpand/Views/CanvasGLView.{h,m}`
 
 - 类名必须**恰好**是 `CanvasGLView`（Kuikly iOS 侧按类名查找，没有独立注册表）。
-- 用 `+ (Class)layerClass` 把 backing layer 换成 `CAEAGLLayer`。
+- 用 `+ (Class)layerClass` 把 backing layer 换成 `CAMetalLayer`。
+- **为什么换 Metal**：OpenGL ES 在 iOS 已废弃（deprecated since iOS 12，能跑但不再优化），Metal 是
+  Apple 官方推荐方案。本实现用 Metal 完成与原来等价的"清屏 + present"逻辑，接口契约（`clearColor` /
+  `onReady`）完全不变。
 - 属性/事件靠**命名约定**自动桥接：`css_clearColor` ←→ `attr { clearColor(...) }`，
   `css_onReady` ←→ `event { onReady { } }`，`setProp` 用宏统一转发：
 
@@ -175,21 +178,26 @@ override fun registerExternalRenderView(kuiklyRenderExport: IKuiklyRenderExport)
 }
 ```
 
-- **懒创建 GL 上下文**，放在 `layoutSubviews`（保证有真实 frame 后再建，且在主线程）。
-- **尺寸变化必须重建 renderbuffer**，否则画面被拉伸：
+- **懒创建 Metal 设备**，放在 `layoutSubviews`（保证有真实 frame 后再建，且在主线程）。
+  `MTLCreateSystemDefaultDevice()` 拿到 `_device` 后创建 `MTLCommandQueue`。
+- **drawable 尺寸必须与物理像素对齐**，尺寸变化时更新 `drawableSize`，否则画面被拉伸：
 
 ```objc
-if (!CGSizeEqualToSize(size, _lastRenderbufferSize)) {
-    [_eaglContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer *)self.layer];
-    _lastRenderbufferSize = size;
-    // framebuffer 不完整 → 退回纯色背景
+CGFloat scale = MAX(self.contentScaleFactor, _metalLayer.contentsScale);
+CGSize drawableSize = CGSizeMake(size.width * scale, size.height * scale);
+if (!CGSizeEqualToSize(drawableSize, _lastDrawableSize)) {
+    _metalLayer.drawableSize = drawableSize;
+    _lastDrawableSize = drawableSize;
 }
 ```
 
-- 三处**兜底**保证任何 GL 失败路径都不白屏：① 初始化时先用 `backgroundColor` 铺成当前清屏色；
-  ② `EAGLContext` 创建失败保持纯色；③ framebuffer 不完整退回纯色。
-- 工程接入：`CanvasGLView.h/.m` 已写入 `project.pbxproj` 的
-  `PBXFileReference` + `PBXGroup` + `PBXSourcesBuildPhase` 三处。
+- 清屏实现：`nextDrawable` → 建 `MTLRenderPassDescriptor`（`loadAction = Clear`，
+  `clearColor = 当前色`）→ 空 `MTLRenderCommandEncoder` → `presentDrawable` + `commit`。
+  静态画面**不跑 60fps 渲染循环**，只在颜色/尺寸变化时重绘一次。
+- 三处**兜底**保证任何 Metal 失败路径都不白屏：① 初始化时先用 `backgroundColor` 铺成当前清屏色；
+  ② `MTLCreateSystemDefaultDevice()` 失败保持纯色；③ `nextDrawable` 拿不到（窗口不可见等）保持纯色。
+- `Metal.framework` 依赖 `CLANG_ENABLE_MODULES = YES` 自动链接，**无需改 `project.pbxproj`**；
+  `CanvasGLView.h/.m` 已写入 `project.pbxproj` 的 `PBXFileReference` + `PBXGroup` + `PBXSourcesBuildPhase` 三处。
 
 ### 4.3 鸿蒙：XComponent(SURFACE) + native EGL / GLES3
 
@@ -371,12 +379,11 @@ plutil -lint iosApp.xcodeproj/project.pbxproj   # 快速校验工程文件没写
 - 编译报找不到 `OpenKuiklyIOSRender` / `shared` 时先跑 `pod install`。
 
 **日志排查**：Xcode 控制台过滤 `CanvasGLView`：
-- 无输出 → 正常走 GL 渲染；
-- `create EAGLContext failed, fallback to solid background color`；
-- `framebuffer incomplete, fallback to solid background color`。
+- 无输出 → 正常走 Metal 渲染；
+- `create MTLDevice failed, fallback to solid background color`（拿不到 Metal 设备时的降级日志）。
 
-后两种是降级，但**页面仍应是红色**（纯色兜底）——正好可用来区分
-"GL 失败但功能没瞎" 与 "View 根本没渲染出来（白/黑屏）"。模拟器与真机均支持 `CAEAGLLayer`。
+Metal 失败路径（设备创建失败、`nextDrawable` 拿不到）均保持**纯色兜底**，页面仍是红色——正好可用来区分
+"Metal 失败但功能没瞎" 与 "View 根本没渲染出来（白/黑屏）"。部署目标 iOS 14.1+，模拟器与真机均支持 Metal。
 
 ### 6.3 鸿蒙
 
@@ -472,6 +479,7 @@ npx --yes serve h5App/build/distributions
 | 3 | `GLSurfaceView` / `XComponent(SURFACE)` 不支持圆角、半透明、层级叠加 | 只适合整页/独立区域铺满 | 本场景即整页铺满，符合预期 |
 | 4 | 两端 Surface 均"异步就绪" | 属性可能早于 Surface 到达 | 已分别用 `RENDERMODE_WHEN_DIRTY` + 首帧回调和 native 颜色缓存处理 |
 | 5 | 小程序 canvas 节点异步渲染 | 首次查询可能为空 | 已做 20×50ms 有界重试 + 纯色兜底 |
+| 6 | OpenGL ES 在 iOS 已废弃（deprecated since iOS 12） | iOS 长期兼容性风险 | iOS 已改用 Metal（`CAMetalLayer` + `MTLDevice`）；Android / 鸿蒙 / H5 / 小程序仍用 GL 系技术，无此问题 |
 
 ---
 
@@ -494,7 +502,7 @@ npx --yes serve h5App/build/distributions
 | 平台 | 时机 |
 | --- | --- |
 | Android | `onDrawFrame` 中首次 `glClear` 后，`post` 回主线程 |
-| iOS | `p_render` 中 `presentRenderbuffer` 后（或纯色兜底时） |
+| iOS | `p_render` 中 Metal command buffer `presentDrawable` 提交后（或纯色兜底时） |
 | 鸿蒙 | `XComponent.onLoad`（Surface 就绪）后 |
 | H5 | 首次 `clear` 后（或 CSS 兜底时） |
 | 小程序 | WebGL `clear` 后（或 CSS 兜底时） |

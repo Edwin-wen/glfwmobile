@@ -48,7 +48,52 @@ npm install                                   # 首次；缺少会报 Cannot fin
 
 ---
 
-## 三、业务 bundle 如何被浏览器拿到
+## 三、手机访问与跨网调试
+
+能否直连不取决于「是否同一子网」，而是**路由可达 + 端口放行**。dev server 监听 `*:8080`，
+只要请求能到达这台机器的 8080 就能打开。
+
+| 网络关系 | 直连 `http://<电脑IP>:8080` | 做法 |
+| --- | --- | --- |
+| 同一子网（同一 Wi-Fi） | ✅ | 直接访问，最简单 |
+| 不同子网但三层互通（公司 VLAN） | ✅（需放行 8080） | 查本机 IP 后直接访问 |
+| 完全隔离（手机 4G / 跨网络） | ❌ | 需要隧道或虚拟局域网，见下表 |
+
+查本机局域网 IP：
+
+```bash
+ipconfig getifaddr en0            # macOS Wi-Fi
+nc -vz <电脑IP> 8080              # 验证端口可达
+```
+
+跨网方案：
+
+| 方案 | 命令 / 操作 | 特点 |
+| --- | --- | --- |
+| Tailscale / ZeroTier（推荐） | 两端装客户端，访问 `100.x.x.x:8080` | 虚拟局域网，等同同子网，延迟低，不需要改代码 |
+| cloudflared 隧道 | `cloudflared tunnel --url http://localhost:8080` | 临时公网 HTTPS 域名，零配置 |
+| ngrok | `ngrok http 8080` | 同上，免费版域名每次变化 |
+| 手机热点 | 电脑连手机热点，访问热点网段 IP | 不装任何软件，适合临时验证 |
+| 公司 VPN | 手机连 VPN 后访问内网 IP | 取决于公司网络策略 |
+
+隧道相关配置已写在 `h5App/webpack.config.d/devserver.js`：
+
+```js
+config.devServer.allowedHosts = 'all'                                   // 放行非本机 Host
+config.devServer.client = { webSocketURL: 'auto://0.0.0.0:0/ws' }       // HMR 走当前 host
+```
+
+说明：实测 webpack-dev-server 4.15.2 在 `host: 0.0.0.0` 下默认并不拦截外部 Host（伪造 Host 返回 200），
+这两行是**兜底**，防止升级或改回 `host: localhost` 后出现 `Invalid Host header` / HMR 连不上。
+
+因为 `index.html` 用相对路径加载业务 bundle，隧道域名下资源天然同源，**不需要为每个域名改地址**。
+
+不跑 dev server 的替代路径：`publishLocalJSBundle` 产出静态目录，传任意静态托管（OSS / nginx / Pages），
+手机从公网访问。缺点是没有热更新，每次改动都要重新发布。
+
+---
+
+## 四、业务 bundle 如何被浏览器拿到
 
 dev server 会发布三个静态来源（启动日志里可见）：
 
@@ -74,7 +119,7 @@ dev server 会发布三个静态来源（启动日志里可见）：
 
 ---
 
-## 四、端口的历史包袱（重要）
+## 五、端口的历史包袱（重要）
 
 模板里原本有两套服务，互相并不配套：
 
@@ -95,7 +140,7 @@ dev server 会发布三个静态来源（启动日志里可见）：
 
 ---
 
-## 五、改业务代码后要做什么
+## 六、改业务代码后要做什么
 
 | 改动范围 | 需要执行 |
 | --- | --- |
@@ -109,7 +154,7 @@ dev server 会发布三个静态来源（启动日志里可见）：
 
 ---
 
-## 六、发布打包
+## 七、发布打包
 
 ```bash
 ./gradlew :shared:packLocalJsBundleRelease    # 生成 shared/build/outputs/kuikly/js/release/local/nativevue2.zip
@@ -128,7 +173,7 @@ val placeText = "./nativevue2.js"
 
 ---
 
-## 七、踩坑速查
+## 八、踩坑速查
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -140,10 +185,13 @@ val placeText = "./nativevue2.js"
 | `webpack.config.d/*.js` 里 `__dirname` 指向 `build/js/packages/<pkg>` | 配置文件被复制到构建目录执行 | 向上查找 `settings.gradle.kts` 定位仓库根 |
 | `webpack.config.d/*.js` 提交不进 git | 全局 `*.js` 忽略规则 | `.gitignore` 里 `!h5App/webpack.config.d/**/*.js` |
 | 控制台 `Cannot use 'import.meta' outside a module` | 模板引入的 `libpag@latest` CDN 脚本已改用 ESM | 与业务无关，可删除该 `<script>` |
+| 隧道域名打开报 `Invalid Host header` | dev server 只认本机 Host | `allowedHosts: 'all'`（已在 `devserver.js` 配置） |
+| 隧道下页面能开但 HMR 断开 | websocket 还指向 localhost | `client.webSocketURL: 'auto://0.0.0.0:0/ws'` |
+| 手机完全打不开（超时） | 不在同一网络或防火墙拦了 8080 | 见第三节：改用隧道 / 热点 / Tailscale |
 
 ---
 
-## 八、文件职责
+## 九、文件职责
 
 | 位置 | 负责内容 | 谁维护 |
 | --- | --- | --- |

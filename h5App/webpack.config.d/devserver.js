@@ -25,3 +25,12 @@ const current = config.devServer.static
 const entries = Array.isArray(current) ? current : current ? [current] : []
 
 config.devServer.static = entries.concat([{ directory: extraStatic, publicPath: '/' }])
+
+// 允许通过非 localhost 的域名访问（内网穿透/ngrok/cloudflared 的域名），
+// 否则 webpack-dev-server 默认只放行本机 Host，会返回 Invalid Host header
+config.devServer.allowedHosts = 'all'
+
+// 隧道域名下 HMR 的 websocket 需要按当前页面 host 推导，避免写死 localhost:8080
+config.devServer.client = Object.assign({}, config.devServer.client, {
+  webSocketURL: 'auto://0.0.0.0:0/ws'
+})

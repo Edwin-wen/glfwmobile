@@ -17,6 +17,17 @@ Pods/*
 Pods-iosApp/*
 Kotlin-js-store
 
+## 小程序端（miniApp/dist）：手写壳入库，构建产物忽略
+# *.js 会误伤手写入口，这里按目录显式保留
+!miniApp/dist/app.js
+!miniApp/dist/pages/**/*.js
+# gradle 生成：渲染运行时、业务产物、资源拷贝
+miniApp/dist/lib/
+miniApp/dist/business/
+miniApp/dist/assets/
+# 微信开发者工具自动写入的本地私有配置
+miniApp/dist/project.private.config.json
+
 ## Various settings
 *.pbxuser
 !default.pbxuser

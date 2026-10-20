@@ -52,6 +52,20 @@ kotlin {
 val businessPathName = "shared"
 
 /**
+ * 压缩 dist 内的 JS 产物。
+ * webpack 产物默认不压缩（lib + business 约 3.9M），超过微信主包 2M 上限，
+ * 压缩后约 1.4M，低于 1.5M 建议值，无需拆分分包。
+ */
+val minifyMiniAppDist = tasks.register<Exec>("minifyMiniAppDist") {
+    group = "kuikly"
+    description = "Minify miniApp/dist JS bundles to keep WeChat main package under 1.5M"
+    workingDir = projectDir
+    commandLine("bash", file("tools/minify-dist.sh").absolutePath)
+    // 压缩必须发生在产物拷贝之后，否则会被未压缩的产物覆盖
+    mustRunAfter("syncRenderProductionToDist", "syncRenderDevelopmentToDist")
+}
+
+/**
  * Copy locally built unified JS result to miniApp's dist/business directory
  */
 fun copyLocalJSBundle(buildSubPath: String) {
@@ -111,11 +125,11 @@ project.afterEvaluate {
     }
 
     tasks.named("jsBrowserProductionWebpack") {
-        finalizedBy("syncRenderProductionToDist")
+        finalizedBy("syncRenderProductionToDist", "minifyMiniAppDist")
     }
 
     tasks.named("jsBrowserDevelopmentWebpack") {
-        finalizedBy("syncRenderDevelopmentToDist")
+        finalizedBy("syncRenderDevelopmentToDist", "minifyMiniAppDist")
     }
 
     tasks.register("jsMiniAppProductionWebpack") {
@@ -125,6 +139,7 @@ project.afterEvaluate {
         // Then copy corresponding nativevue2.zip from business build result and copy nativevue2.js
         // to miniApp's release directory
         copyLocalJSBundle("distributions")
+        finalizedBy("minifyMiniAppDist")
     }
 
     tasks.register("jsMiniAppDevelopmentWebpack") {
@@ -134,5 +149,6 @@ project.afterEvaluate {
         // Then copy corresponding nativevue2.zip from business build result and copy nativevue2.js
         // to miniApp's release directory
         copyLocalJSBundle("developmentExecutable")
+        finalizedBy("minifyMiniAppDist")
     }
 }

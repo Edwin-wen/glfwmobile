@@ -21,6 +21,8 @@ Kotlin-js-store
 # *.js 会误伤手写入口，这里按目录显式保留
 !miniApp/dist/app.js
 !miniApp/dist/pages/**/*.js
+# H5 dev server 的 webpack 配置属于源码
+!h5App/webpack.config.d/**/*.js
 # gradle 生成：渲染运行时、业务产物、资源拷贝
 miniApp/dist/lib/
 miniApp/dist/business/
@@ -48,3 +50,5 @@ miniApp/dist/project.private.config.json
 *.xcscmblueprint
 *.xcbkptlist
 *.pyc
+# 浏览器验证产生的临时截图/脚本
+.cursor-observation/

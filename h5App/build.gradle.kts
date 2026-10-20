@@ -134,7 +134,7 @@ fun generateLocalHtml() {
     )
     val fileContent = Files.readString(filePath)
     // Placeholder to be replaced
-    val placeText = "http://127.0.0.1:8083/nativevue2.js"
+    val placeText = "./nativevue2.js"
     // Replace development environment JSBundle link with production environment link
     val updatedContent = fileContent.replace(placeText, "page/nativevue2.js")
     // Write new file content
@@ -154,7 +154,7 @@ fun generateSplitHtml() {
     )
     val fileContent = Files.readString(htmlFilePath)
     // Placeholder to be replaced
-    val placeText = "http://127.0.0.1:8083/nativevue2.js"
+    val placeText = "./nativevue2.js"
     // Need to read all js files in page, get file names, then modify business js in index.html to corresponding
     val pagePath = Paths.get(
         project.buildDir.absolutePath,
@@ -260,6 +260,22 @@ fun copyAssetsFileToWebpackDevServer() {
 project.afterEvaluate {
     // At this point, project configuration is complete,
     // register build h5 page release version related build methods here
+
+    // 同步 shared 的 Web 产物到静态目录，dev server 会把它作为额外 static 目录发布
+    tasks.register<Copy>("syncBusinessBundleToStatic") {
+        group = "kuikly"
+        description = "Copy shared web bundle to static_server/static for webpack dev server"
+        dependsOn(":shared:jsBrowserDevelopmentWebpack")
+        from(Paths.get(project.rootDir.absolutePath, businessPathName, "build", "dist", "js", "developmentExecutable")) {
+            include("nativevue2.js")
+        }
+        into(Paths.get(project.rootDir.absolutePath, "static_server", "static").toFile())
+    }
+
+    // 启动 H5 调试服务器前，保证业务 bundle 已就位
+    tasks.named("jsBrowserDevelopmentRun") {
+        dependsOn("syncBusinessBundleToStatic")
+    }
 
     // Register Release unified packaging processing task
     tasks.register("publishLocalJSBundle") {

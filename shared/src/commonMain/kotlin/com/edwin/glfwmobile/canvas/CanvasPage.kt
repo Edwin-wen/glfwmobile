@@ -14,12 +14,13 @@ internal class CanvasPage : BasePager() {
             attr {
                 backgroundColor(Color.BLACK)
             }
-            // 铺满整页的原生 OpenGL 视图
-            // 自定义 View 必须显式指定宽高，这里用绝对定位 + 页面尺寸保证铺满且不参与 flex 布局
+            // 铺满整页的 Skia 画布
             CanvasGLView {
                 attr {
                     absolutePositionAllZero()
                     size(ctx.pagerData.pageViewWidth, ctx.pagerData.pageViewHeight)
+                    // 唯一的绘制意图：原生端由 canvasCore(C++/Skia) 播放，Web 端由 CanvasKit 播放
+                    scene(CanvasScene.clear(0xFFFF0000))
                 }
             }
         }

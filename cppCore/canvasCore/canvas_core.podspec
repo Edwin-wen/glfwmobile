@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
   s.platform         = :ios, '14.1'
   s.static_framework = true
   s.requires_arc     = true
-  s.frameworks       = 'OpenGLES', 'QuartzCore', 'UIKit'
+  s.frameworks       = 'Metal', 'QuartzCore', 'UIKit'
 
   s.source_files         = 'include/**/*.h', 'src/**/*.{h,cpp,mm}', 'third_party/**/*.h'
   s.public_header_files  = 'include/**/*.h'
@@ -28,8 +28,8 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY'           => 'libc++',
-    # EAGL 实现的 .mm 需要 framework 形式的 OpenGLES 头文件
-    'FRAMEWORK_SEARCH_PATHS'      => '"$(SDKROOT)/System/Library/Frameworks"',
+    # iOS GPU 后端选择：Metal（去掉该宏则回退 EAGL，需要 skia_use_metal=false 的产物）
+    'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) SKC_USE_METAL=1',
     'HEADER_SEARCH_PATHS'         => [
       '"$(PODS_TARGET_SRCROOT)/include"',
       '"$(PODS_TARGET_SRCROOT)/src"',

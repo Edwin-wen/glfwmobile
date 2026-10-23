@@ -94,8 +94,26 @@ bool skc_attach_eagl(skc_canvas *canvas, void *ca_eagl_layer);
 /** iOS：用 EAGL 后端绘制一帧并 present；等价于 skc_render_gl(canvas, 0, w, h) */
 bool skc_render_eagl(skc_canvas *canvas, int32_t width, int32_t height);
 
-/** 释放 GPU 上下文，后续调用 skc_render_gl 会返回 false */
+/**
+ * iOS：把 CAMetalLayer 交给 canvas_core，由 core 创建 MTLDevice / CommandQueue /
+ * GrDirectContext 并负责 present。其它平台返回 false。
+ */
+bool skc_attach_metal(skc_canvas *canvas, void *ca_metal_layer);
+
+/** iOS：用 Metal 后端绘制一帧并 present */
+bool skc_render_metal(skc_canvas *canvas, int32_t width, int32_t height);
+
+/**
+ * 释放 GPU 上下文，后续调用 skc_render_gl 会返回 false。
+ * 调用线程必须已绑定该画布的 GL 上下文；Skia 会在返回前回收自己的 GPU 资源。
+ */
 void skc_detach_gpu(skc_canvas *canvas);
+
+/**
+ * 放弃 GPU 上下文：不调用任何图形 API，只丢引用，允许在上下文已销毁/不可用的线程上调用。
+ * Surface 销毁阶段拿不到合法 GL 现场时用它，避免 Skia 析构里的 flush/submit 卡死驱动。
+ */
+void skc_abandon_gpu(skc_canvas *canvas);
 
 /** 最近一次错误信息；无错误时返回空串（不返回 NULL） */
 const char *skc_last_error(const skc_canvas *canvas);

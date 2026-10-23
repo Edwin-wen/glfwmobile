@@ -16,7 +16,7 @@
 | 端 | 状态 | 实现 | 验证 |
 | --- | --- | --- | --- |
 | Android | **已迁移** | raster：`View` + `Bitmap`；gpu：`GLSurfaceView` + Ganesh | 模拟器实测两种后端均为纯红 |
-| iOS | **已迁移** | raster：`CGImage`；gpu：`CAEAGLLayer` + Ganesh（Skia 产物无 Metal 后端） | `xcodebuild -sdk iphoneos` 编译链接通过（需真机运行） |
+| iOS | **已迁移** | raster：`CGImage`；gpu：`CAMetalLayer` + Ganesh Metal（iOS 产物启用 `skia[metal]`） | `xcodebuild -sdk iphoneos` 编译链接通过，链接 `Metal.framework`（需真机运行） |
 | 鸿蒙 | **已迁移** | raster：光栅化 + 纹理上传；gpu：EGL 内直接绘制 | `hvigorw assembleHap` 产出签名 HAP，含两种后端 |
 | H5 | **已迁移** | CanvasKit：WebGL / 软件 surface 可切 | 浏览器实测两种后端均为纯红 |
 | 小程序 | **已迁移** | `<canvas type="2d">` + Canvas2D（GPU 暂不支持） | 构建通过，需微信开发者工具验证 |
@@ -618,6 +618,7 @@ shared/commonMain           CanvasScene（scene DSL）
 | 2 | 鸿蒙 Skia 只提供 arm64 | 仅 arm64 设备/模拟器 |
 | 3 | 小程序用 Canvas2D 而非 CanvasKit | `blur/gradient/path` 等后续 op 需补 Canvas2D 实现或另开 WASM 方案 |
 | 4 | raster 为整帧重绘 | 动效场景需切 GPU 后端（Metal / EGL 直绘） |
+| 5 | iOS GPU 依赖 Skia 的 `metal` feature | 换回 `skia_use_metal=false` 的产物时，需去掉 podspec 的 `SKC_USE_METAL=1` 走 EAGL 实现 |
 
 ### 9.5 绘制后端开关（raster / gpu / auto）
 
@@ -648,7 +649,7 @@ CanvasGLView {
 | 端 | raster | gpu | 回退 |
 | --- | --- | --- | --- |
 | Android | `View` + `Bitmap` + `skc_render_raster` | `GLSurfaceView` + `skc_attach_gl` + `skc_render_gl(FBO 0)` | attach 失败 → 换回 raster 子视图 |
-| iOS | `UIView` + `CGImage` | `CAEAGLLayer` + `skc_attach_eagl` + `skc_render_eagl` | attach/render 失败 → 隐藏 EAGL 层走 raster |
+| iOS | `UIView` + `CGImage` | `CAMetalLayer` + `skc_attach_metal` + `skc_render_metal`（Ganesh Metal） | attach/render 失败 → 隐藏 Metal 层走 raster |
 | 鸿蒙 | Skia 光栅化 + GL 纹理上传 | EGL 上下文内 `skc_render_gl(FBO 0)` | attach/render 失败 → 继续纹理路径 |
 | H5 | CanvasKit `MakeSWCanvasSurface` | CanvasKit `MakeWebGLCanvasSurface` | WebGL 不可用 → 软件 surface → CSS 纯色 |
 | 小程序 | Canvas2D | 暂不支持（无 Skia 运行时） | 打 warning，保持 Canvas2D |
@@ -665,7 +666,11 @@ bool skc_attach_gl(skc_canvas*);                     /* 调用线程需已 makeC
 bool skc_render_gl(skc_canvas*, uint32_t fbo_id, int32_t w, int32_t h);
 void skc_detach_gpu(skc_canvas*);
 
-/* iOS：把 CAEAGLLayer 交给 core，EAGLContext/FBO/present 全部在 core 内完成 */
+/* iOS：把 CAMetalLayer 交给 core，MTLDevice/CommandQueue/present 全部在 core 内完成 */
+bool skc_attach_metal(skc_canvas*, void* ca_metal_layer);
+bool skc_render_metal(skc_canvas*, int32_t w, int32_t h);
+
+/* 备用：EAGL 实现（需 skia 产物关闭 metal、podspec 去掉 SKC_USE_METAL） */
 bool skc_attach_eagl(skc_canvas*, void* ca_eagl_layer);
 bool skc_render_eagl(skc_canvas*, int32_t w, int32_t h);
 ```
@@ -676,9 +681,12 @@ GPU 实现细节：
   `GrDirectContexts::MakeGL/MakeEGL/MakeIOS` + `GrBackendRenderTargets::MakeGL` +
   `SkSurfaces::WrapBackendRenderTarget`，每帧 `flushAndSubmit`。
 - 静态画面只在场景/尺寸变化时重绘，不跑渲染循环。
-- **iOS 的 Skia 构建没有 Metal 后端**（`libskia.a` 里只有 Ganesh GL/EAGL 符号），
-  因此 iOS GPU 走 EAGL 而非 Metal；后续若重编 Skia 开启 `skia_use_metal`，可只替换
-  `gpu_surface_eagl.mm` 为 Metal 实现，ABI 不变。
+- iOS GPU 使用 **Metal**：`vcpkg/vcpkg.json` 对 iOS 追加 `skia[metal]`（对应 GN 参数
+  `skia_use_metal=true`），`gpu_surface_metal.mm` 用 `GrDirectContexts::MakeMetal` +
+  `CAMetalLayer.nextDrawable` + `GrBackendRenderTargets::MakeMtl` + `WrapBackendRenderTarget`，
+  每帧 `flushAndSubmit` 后在同一个 `MTLCommandQueue` 上 present（同队列按提交顺序执行）。
+- 旧产物（`skia_use_metal=false`）只有 GL/EAGL 符号，此时可去掉 podspec 的
+  `SKC_USE_METAL=1` 回退到 `gpu_surface_eagl.mm`。
 - iOS 26 SDK 把 `OpenGLES/ES3/gl3.h` 改名为 `OpenGLES/ES3/gl.h`，pod 内已按新头文件名引用。
 
 验证结果（本机）：
@@ -687,7 +695,7 @@ GPU 实现细节：
 | --- | --- | --- |
 | Android 模拟器 | `render backend=raster`，纯红 | `render backend=gpu`，纯红 |
 | H5（headless Chrome） | canvas 2D context，纯红 | WebGL2，纯红 |
-| iOS | `xcodebuild` 通过 | `xcodebuild` 通过（需真机运行） |
+| iOS | `xcodebuild` 通过 | `xcodebuild` 通过，链接 Ganesh Metal（需真机运行） |
 | 鸿蒙 | `assembleHap` 通过 | `assembleHap` 通过（含 `skc_attach_gl`/`skc_render_gl`） |
 | 小程序 | 构建通过（Canvas2D） | 不支持，运行时 warning |
 

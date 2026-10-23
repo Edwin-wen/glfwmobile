@@ -28,6 +28,12 @@ namespace {
  */
 class GLGpuSurface final : public GpuSurface {
 public:
+    ~GLGpuSurface() override {
+        // 析构路径按「上下文可能已不可用」处理：不发起任何 GL 调用。
+        // 正常释放请走 skc_detach_gpu（要求调用线程已绑定 GL 上下文）。
+        abandon();
+    }
+
     bool attach(void *native_layer) override {
         (void)native_layer;
         if (context_ != nullptr) {
@@ -77,14 +83,32 @@ public:
     }
 
     void detach() override {
+        if (context_ != nullptr) {
+            // GrDirectContext 默认析构会 flush + submit 未提交的绘制。Surface/EGL 即将销毁时
+            // 这一步会落到不合法的 GL 现场上，直接卡死驱动（APP_INPUT_BLOCK）。
+            // releaseResourcesAndAbandonContext 在上下文仍可用时回收资源并放弃后续 backend 调用。
+            context_->releaseResourcesAndAbandonContext();
+        }
+        ReleaseSkiaHandles();
+    }
+
+    void abandon() override {
+        if (context_ != nullptr) {
+            // 上下文已丢失/不可用：只打 abandon 标记，保证析构不再发起任何 GL 调用。
+            context_->abandonContext();
+        }
+        ReleaseSkiaHandles();
+    }
+
+private:
+    /** Surface 持有 Context 引用，必须先于 Context 释放 */
+    void ReleaseSkiaHandles() {
         surface_.reset();
         context_.reset();
         fbo_id_ = 0;
         width_ = 0;
         height_ = 0;
     }
-
-private:
     sk_sp<GrDirectContext> context_;
     sk_sp<SkSurface> surface_;
     uint32_t fbo_id_ = 0;

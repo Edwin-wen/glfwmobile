@@ -11,7 +11,20 @@
         "gl",
         "harfbuzz",
         "icu"
-      ]
+      ],
+      "platform": "!ios"
+    },
+    {
+      "name": "skia",
+      "default-features": false,
+      "features": [
+        "freetype",
+        "gl",
+        "harfbuzz",
+        "icu",
+        "metal"
+      ],
+      "platform": "ios"
     }
   ]
 }

@@ -1,7 +1,7 @@
 #import "CanvasGLView.h"
 #import <OpenKuiklyIOSRender/KRComponentDefine.h>
 
-#import <QuartzCore/CAEAGLLayer.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/QuartzCore.h>
 #import <canvas_core/canvas_core.h>
 
@@ -15,9 +15,9 @@ static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
     size_t _pixelHeight;
     BOOL _readyEventFired;
 
-    // gpu：CAEAGLLayer 交给 canvas_core，EAGLContext / FBO / present 都在 core 内完成
-    CAEAGLLayer *_eaglLayer;
-    BOOL _eaglAttached;
+    // gpu：CAMetalLayer 交给 canvas_core，MTLDevice / CommandQueue / present 都在 core 内完成
+    CAMetalLayer *_metalLayer;
+    BOOL _gpuAttached;
     BOOL _useGpu;
 }
 
@@ -108,13 +108,13 @@ static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
     if ([css_backend isEqualToString:@"raster"]) {
         skc_set_backend(_core, SKC_BACKEND_RASTER);
         _useGpu = NO;
-        _eaglLayer.hidden = YES;
+        _metalLayer.hidden = YES;
     } else {
         skc_set_backend(_core, [css_backend isEqualToString:@"gpu"] ? SKC_BACKEND_GPU
                                                                     : SKC_BACKEND_AUTO);
         _useGpu = YES;
         // 切回 GPU 时重新 attach，让 canvas_core 把 active backend 切到 gpu
-        _eaglAttached = NO;
+        _gpuAttached = NO;
     }
     [self setNeedsLayout];
 }
@@ -149,9 +149,9 @@ static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
         }
         NSLog(@"[CanvasGLView] GPU backend unavailable, fallback to raster");
         _useGpu = NO;
-        _eaglLayer.hidden = YES;
+        _metalLayer.hidden = YES;
     }
-    _eaglLayer.hidden = YES;
+    _metalLayer.hidden = YES;
     [self p_renderRaster];
 }
 
@@ -204,38 +204,34 @@ static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
     [self p_fireReadyIfNeeded];
 }
 
-#pragma mark - gpu (EAGL)
+#pragma mark - gpu (Metal)
 
-/** 只负责创建 CAEAGLLayer；EAGLContext / FBO / present 都由 canvas_core 内部完成 */
-- (BOOL)p_setupEaglLayer {
-    if (_eaglLayer != nil) {
+/** 只负责创建 CAMetalLayer；device/queue/绘制/present 都由 canvas_core 内部完成 */
+- (BOOL)p_setupMetalLayer {
+    if (_metalLayer != nil) {
         return YES;
     }
-    _eaglLayer = [CAEAGLLayer layer];
-    _eaglLayer.frame = self.bounds;
-    _eaglLayer.opaque = YES;
-    _eaglLayer.contentsScale = self.contentScaleFactor;
-    _eaglLayer.drawableProperties = @{
-        kEAGLDrawablePropertyRetainedBacking: @NO,
-        kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8
-    };
-    [self.layer addSublayer:_eaglLayer];
+    _metalLayer = [CAMetalLayer layer];
+    _metalLayer.frame = self.bounds;
+    _metalLayer.opaque = YES;
+    _metalLayer.contentsScale = self.contentScaleFactor;
+    [self.layer addSublayer:_metalLayer];
     return YES;
 }
 
 - (BOOL)p_renderGpu {
-    if (![self p_setupEaglLayer]) {
+    if (![self p_setupMetalLayer]) {
         return NO;
     }
-    if (!_eaglAttached) {
-        _eaglAttached = skc_attach_eagl(_core, (__bridge void *)_eaglLayer);
-        if (!_eaglAttached) {
-            NSLog(@"[CanvasGLView] skc_attach_eagl failed: %s", skc_last_error(_core));
+    if (!_gpuAttached) {
+        _gpuAttached = skc_attach_metal(_core, (__bridge void *)_metalLayer);
+        if (!_gpuAttached) {
+            NSLog(@"[CanvasGLView] skc_attach_metal failed: %s", skc_last_error(_core));
             return NO;
         }
     }
-    _eaglLayer.hidden = NO;
-    _eaglLayer.frame = self.bounds;
+    _metalLayer.hidden = NO;
+    _metalLayer.frame = self.bounds;
 
     CGFloat scale = self.contentScaleFactor > 0 ? self.contentScaleFactor : 1.0;
     GLsizei width = (GLsizei)lround(self.bounds.size.width * scale);
@@ -245,8 +241,8 @@ static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
     }
     skc_set_size(_core, (int32_t)width, (int32_t)height, (float)scale);
 
-    if (!skc_render_eagl(_core, (int32_t)width, (int32_t)height)) {
-        NSLog(@"[CanvasGLView] skc_render_eagl failed: %s", skc_last_error(_core));
+    if (!skc_render_metal(_core, (int32_t)width, (int32_t)height)) {
+        NSLog(@"[CanvasGLView] skc_render_metal failed: %s", skc_last_error(_core));
         return NO;
     }
     self.layer.contents = nil;

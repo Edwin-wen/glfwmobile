@@ -26,7 +26,15 @@ public:
                         const Scene &scene,
                         float dpr) = 0;
 
+    /** 正常释放：需要调用线程已绑定 GL 上下文，Skia 会顺带 glDelete 自己的对象 */
     virtual void detach() = 0;
+
+    /**
+     * 放弃上下文：不调用任何图形 API，只丢弃 Skia 对 GPU 资源的引用。
+     * 用于上下文已丢失 / 已销毁 / 被同线程其它画布抢占，无法安全 makeCurrent 的场景；
+     * 默认退回 detach()，各后端可覆盖。
+     */
+    virtual void abandon() { detach(); }
 };
 
 /** 按平台编译期选择 EGL / EAGL 接口 */

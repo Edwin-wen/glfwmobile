@@ -2,7 +2,7 @@
 
 // iOS 的 GPU 后端：EAGL + 自建 FBO。平台只提供 CAEAGLLayer，其余全部在 core 内完成，
 // 这样 App 侧不需要引入 OpenGLES 头文件，也和 Android/鸿蒙共用同一套 C ABI。
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(SKC_USE_METAL)
 
 #import <OpenGLES/EAGL.h>
 // iOS 26 SDK 起 ES3 头文件从 gl3.h 改名为 ES3/gl.h
@@ -94,6 +94,12 @@ public:
     void detach() override {
         if (context_ != nil) {
             [EAGLContext setCurrentContext:context_];
+            // 与 GL 后端同理：GrDirectContext 默认析构会 flush，必须在 EAGLContext 仍 current 时放弃
+            if (context_gr_ != nullptr) {
+                context_gr_->releaseResourcesAndAbandonContext();
+            }
+            surface_.reset();
+            context_gr_.reset();
             if (framebuffer_ != 0) {
                 glDeleteFramebuffers(1, &framebuffer_);
                 framebuffer_ = 0;
@@ -103,9 +109,10 @@ public:
                 color_renderbuffer_ = 0;
             }
             [EAGLContext setCurrentContext:nil];
+        } else {
+            surface_.reset();
+            context_gr_.reset();
         }
-        surface_.reset();
-        context_gr_.reset();
         context_ = nil;
         layer_ = nil;
         width_ = 0;
@@ -156,4 +163,4 @@ std::unique_ptr<GpuSurface> CreateGpuSurface() {
 
 } // namespace skc
 
-#endif // __APPLE__
+#endif // __APPLE__ && !SKC_USE_METAL

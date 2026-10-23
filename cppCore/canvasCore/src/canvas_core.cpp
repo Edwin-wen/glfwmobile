@@ -134,7 +134,7 @@ bool skc_attach_gl(skc_canvas *canvas) {
 }
 
 bool skc_attach_eagl(skc_canvas *canvas, void *ca_eagl_layer) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && !defined(SKC_USE_METAL)
     if (canvas == nullptr || ca_eagl_layer == nullptr) {
         return false;
     }
@@ -155,6 +155,7 @@ bool skc_attach_eagl(skc_canvas *canvas, void *ca_eagl_layer) {
     canvas->error.clear();
     return true;
 #else
+    // Metal 版本编译时不存在 EAGL 实现，避免把 CAEAGLLayer 误当成 CAMetalLayer
     (void)canvas;
     (void)ca_eagl_layer;
     return false;
@@ -162,6 +163,38 @@ bool skc_attach_eagl(skc_canvas *canvas, void *ca_eagl_layer) {
 }
 
 bool skc_render_eagl(skc_canvas *canvas, int32_t width, int32_t height) {
+    return skc_render_gl(canvas, 0, width, height);
+}
+
+bool skc_attach_metal(skc_canvas *canvas, void *ca_metal_layer) {
+#if defined(__APPLE__)
+    if (canvas == nullptr || ca_metal_layer == nullptr) {
+        return false;
+    }
+    if (canvas->requested == SKC_BACKEND_RASTER) {
+        canvas->active = SKC_BACKEND_RASTER;
+        return false;
+    }
+    if (canvas->gpu == nullptr) {
+        canvas->gpu = skc::CreateGpuSurface();
+    }
+    if (canvas->gpu == nullptr || !canvas->gpu->attach(ca_metal_layer)) {
+        canvas->gpu.reset();
+        canvas->active = SKC_BACKEND_RASTER;
+        SetError(canvas, "metal attach failed");
+        return false;
+    }
+    canvas->active = SKC_BACKEND_GPU;
+    canvas->error.clear();
+    return true;
+#else
+    (void)canvas;
+    (void)ca_metal_layer;
+    return false;
+#endif
+}
+
+bool skc_render_metal(skc_canvas *canvas, int32_t width, int32_t height) {
     return skc_render_gl(canvas, 0, width, height);
 }
 
@@ -182,6 +215,17 @@ void skc_detach_gpu(skc_canvas *canvas) {
     }
     if (canvas->gpu != nullptr) {
         canvas->gpu->detach();
+        canvas->gpu.reset();
+    }
+    canvas->active = SKC_BACKEND_RASTER;
+}
+
+void skc_abandon_gpu(skc_canvas *canvas) {
+    if (canvas == nullptr) {
+        return;
+    }
+    if (canvas->gpu != nullptr) {
+        canvas->gpu->abandon();
         canvas->gpu.reset();
     }
     canvas->active = SKC_BACKEND_RASTER;

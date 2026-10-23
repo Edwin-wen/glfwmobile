@@ -189,3 +189,10 @@ open(url) {                                  // url 形如 "?page_name=canvas"
 | `miniApp/dist/`（除 lib、business） | 小程序壳、页面注册、模板 | 手工维护 |
 | `miniApp/dist/lib`、`dist/business` | 渲染运行时、业务产物 | gradle 生成 |
 | `miniApp/tools/minify-dist.sh` | 产物压缩 | 构建后处理 |
+
+---
+
+## 九、延伸阅读
+
+- [Skia（CanvasKit）为什么在 H5 可用、在小程序不可用](Skia-与H5的运行时差异.md)
+  —— 运行时差异、CanvasKit 的 4 个启动卡点、体积数据，以及要接入时的四步方案。

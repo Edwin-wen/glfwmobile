@@ -65,6 +65,7 @@ class MiniCanvasGLViewElement(
     companion object {
         const val NODE_NAME = "canvas"
         const val TYPE_WEBGL = "webgl"
+        const val TYPE_2D = "2d"
         private const val TYPE = "type"
     }
 }

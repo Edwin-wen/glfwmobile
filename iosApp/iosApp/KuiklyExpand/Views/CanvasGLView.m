@@ -1,28 +1,25 @@
 #import "CanvasGLView.h"
 #import <OpenKuiklyIOSRender/KRComponentDefine.h>
 
-#import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/QuartzCore.h>
+#import <canvas_core/canvas_core.h>
 
-/* 默认清屏颜色：不透明红色 */
-#define KR_CANVAS_DEFAULT_R 1.0f
-#define KR_CANVAS_DEFAULT_G 0.0f
-#define KR_CANVAS_DEFAULT_B 0.0f
-#define KR_CANVAS_DEFAULT_A 1.0f
+/* 默认清屏颜色：不透明红色（与 Android / Web 保持一致） */
+static const uint32_t kKRCanvasDefaultArgb = 0xFFFF0000u;
 
 @interface CanvasGLView () {
-    id<MTLDevice> _device;          // Metal 设备（懒创建，保证在主线程初始化）
-    id<MTLCommandQueue> _commandQueue;
-    CAMetalLayer *_metalLayer;      // backing layer
-    BOOL _metalReady;               // Metal 是否可用
-    BOOL _readyEventFired;          // onReady 是否已派发
-    CGSize _lastDrawableSize;       // 上次 drawable 尺寸，用于尺寸变化时更新
-    double _clearColor[4];          // RGBA 0~1（MTLClearColor 使用 double 分量）
+    skc_canvas *_core;      // C++ 绘制核心（与 Android / 鸿蒙同一份实现）
+    uint8_t *_pixels;       // RGBA8888 光栅缓冲，由 CGImage 直接引用
+    size_t _pixelWidth;
+    size_t _pixelHeight;
+    BOOL _readyEventFired;
 }
 
-/* 对应 Kuikly 侧 attr { clearColor("...") } */
+/* 对应 Kuikly 侧 attr { clearColor("...") }，兼容旧用法 */
 @property (nonatomic, copy) NSString *css_clearColor;
+
+/* 对应 Kuikly 侧 attr { scene(...) }，统一绘制指令（JSON） */
+@property (nonatomic, copy) NSString *css_scene;
 
 /* 对应 Kuikly 侧 event { onReady { } } */
 @property (nonatomic, strong) KuiklyRenderCallback css_onReady;
@@ -33,48 +30,36 @@
 
 @synthesize hr_rootView;
 
-+ (Class)layerClass {
-    return [CAMetalLayer class];
-}
-
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        _clearColor[0] = KR_CANVAS_DEFAULT_R;
-        _clearColor[1] = KR_CANVAS_DEFAULT_G;
-        _clearColor[2] = KR_CANVAS_DEFAULT_B;
-        _clearColor[3] = KR_CANVAS_DEFAULT_A;
-        // Metal 未就绪时用纯色兜底，避免白屏
-        self.backgroundColor = [self p_uiColorWithCurrentClearColor];
-        _metalLayer = (CAMetalLayer *)self.layer;
-        _metalLayer.opaque = YES;
-        _metalLayer.framebufferOnly = YES;
-        _metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        // 先给一个初始 scale，layoutSubviews 里会再按屏幕真实 scale 校准
-        _metalLayer.contentsScale = [UIScreen mainScreen].scale;
+        _core = skc_create();
+        self.backgroundColor = [self p_uiColorFromArgb:kKRCanvasDefaultArgb];
+        // 光栅结果通过 layer.contents 呈现，尺寸变化时拉伸到目标大小
+        self.layer.contentsGravity = kCAGravityResize;
+        self.layer.magnificationFilter = kCAFilterNearest;
     }
     return self;
 }
 
 - (void)dealloc {
-    _device = nil;
-    _commandQueue = nil;
+    if (_core != NULL) {
+        skc_destroy(_core);
+        _core = NULL;
+    }
+    free(_pixels);
+    _pixels = NULL;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // window 就绪后 contentsScale 才可靠，这里按屏幕 scale 校准图层
-    _metalLayer.contentsScale = [UIScreen mainScreen].scale;
-    if (!_device) {
-        [self p_setupMetal];
-    }
     [self p_render];
 }
 
 #pragma mark - KuiklyRenderViewExportProtocol
 
 - (void)hrv_setPropWithKey:(NSString *)propKey propValue:(id)propValue {
-    // clearColor / onReady 等属性由 css_setPropWithKey 统一分发到 setCss_xxx:
+    // clearColor / scene / onReady 统一分发到 setCss_xxx:
     KUIKLY_SET_CSS_COMMON_PROP;
 }
 
@@ -86,13 +71,24 @@
 
 - (void)setCss_clearColor:(NSString *)css_clearColor {
     _css_clearColor = [css_clearColor copy];
-    if (![self p_parseColor:css_clearColor into:_clearColor]) {
-        _clearColor[0] = KR_CANVAS_DEFAULT_R;
-        _clearColor[1] = KR_CANVAS_DEFAULT_G;
-        _clearColor[2] = KR_CANVAS_DEFAULT_B;
-        _clearColor[3] = KR_CANVAS_DEFAULT_A;
+    uint32_t argb = kKRCanvasDefaultArgb;
+    if (![self p_parseArgb:css_clearColor into:&argb]) {
+        argb = kKRCanvasDefaultArgb;
     }
-    self.backgroundColor = [self p_uiColorWithCurrentClearColor];
+    [self p_ensureCore];
+    if (_core != NULL) {
+        skc_set_clear_color(_core, argb);
+    }
+    self.backgroundColor = [self p_uiColorFromArgb:argb];
+    [self setNeedsLayout];
+}
+
+- (void)setCss_scene:(NSString *)css_scene {
+    _css_scene = [css_scene copy];
+    [self p_ensureCore];
+    if (_core != NULL && css_scene.length > 0) {
+        skc_set_scene(_core, css_scene.UTF8String);
+    }
     [self setNeedsLayout];
 }
 
@@ -101,64 +97,80 @@
     [self p_fireReadyIfNeeded];
 }
 
-#pragma mark - Metal
+#pragma mark - Skia 渲染
 
-/** 创建 Metal 设备与命令队列（仅在主线程、首次布局时调用） */
-- (void)p_setupMetal {
-    if (CGSizeEqualToSize(self.bounds.size, CGSizeZero)) {
-        return;
+- (void)p_ensureCore {
+    if (_core == NULL) {
+        _core = skc_create();
     }
-    _device = MTLCreateSystemDefaultDevice();
-    if (!_device) {
-        NSLog(@"[CanvasGLView] create MTLDevice failed, fallback to solid background color");
-        return;
-    }
-    _metalLayer.device = _device;
-    _commandQueue = [_device newCommandQueue];
-    _metalReady = YES;
-    _lastDrawableSize = CGSizeZero;
 }
 
-/** 清屏并呈现一帧（静态画面：只在颜色/尺寸变化时触发） */
 - (void)p_render {
-    if (!_metalReady || !_device || !_metalLayer) {
-        return;
-    }
     CGSize size = self.bounds.size;
-    if (CGSizeEqualToSize(size, CGSizeZero)) {
+    if (size.width < 1.0 || size.height < 1.0) {
         return;
     }
-    // drawable 尺寸必须与物理像素一致，尺寸变化时需要更新，否则画面会被拉伸
-    CGFloat scale = MAX(self.contentScaleFactor, _metalLayer.contentsScale);
-    CGSize drawableSize = CGSizeMake(size.width * scale, size.height * scale);
-    if (!CGSizeEqualToSize(drawableSize, _lastDrawableSize)) {
-        _metalLayer.drawableSize = drawableSize;
-        _lastDrawableSize = drawableSize;
+    [self p_ensureCore];
+    if (_core == NULL) {
+        return;
     }
-    @autoreleasepool {
-        id<CAMetalDrawable> drawable = [_metalLayer nextDrawable];
-        if (!drawable) {
-            // 拿不到 drawable（窗口不可见等）时保持纯色兜底，不白屏
+
+    // 物理像素对齐：scene 坐标是逻辑像素（pt），由 dpr 换算
+    CGFloat scale = self.contentScaleFactor > 0 ? self.contentScaleFactor : 1.0;
+    size_t width = (size_t)lround(size.width * scale);
+    size_t height = (size_t)lround(size.height * scale);
+    if (width == 0 || height == 0) {
+        return;
+    }
+
+    uint8_t *previousPixels = NULL;
+    if (width != _pixelWidth || height != _pixelHeight) {
+        uint8_t *newPixels = (uint8_t *)calloc(width * height * 4, 1);
+        if (newPixels == NULL) {
             return;
         }
-        MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-        MTLRenderPassColorAttachmentDescriptor *colorAttachment = descriptor.colorAttachments[0];
-        colorAttachment.texture = drawable.texture;
-        colorAttachment.loadAction = MTLLoadActionClear;
-        colorAttachment.storeAction = MTLStoreActionStore;
-        colorAttachment.clearColor = MTLClearColorMake(_clearColor[0], _clearColor[1], _clearColor[2], _clearColor[3]);
-
-        id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
-        [encoder endEncoding];
-        [commandBuffer presentDrawable:drawable];
-        [commandBuffer commit];
+        previousPixels = _pixels;
+        _pixels = newPixels;
+        _pixelWidth = width;
+        _pixelHeight = height;
+        skc_set_size(_core, (int32_t)width, (int32_t)height, (float)scale);
     }
+
+    if (!skc_render_raster(_core, _pixels, (int32_t)(width * 4), (int32_t)width, (int32_t)height)) {
+        if (previousPixels != NULL) {
+            free(previousPixels);
+        }
+        return;
+    }
+
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, _pixels, width * height * 4, NULL);
+    if (provider == NULL) {
+        if (previousPixels != NULL) {
+            free(previousPixels);
+        }
+        return;
+    }
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGImageRef image = CGImageCreate(width, height, 8, 32, width * 4, colorSpace,
+                                     kCGImageAlphaPremultipliedLast | kCGBitmapByteOrderDefault,
+                                     provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+
+    if (image != NULL) {
+        self.layer.contents = (__bridge id)image;
+        CGImageRelease(image);
+    }
+    // 旧内容已被替换，此时释放上一块缓冲
+    if (previousPixels != NULL) {
+        free(previousPixels);
+    }
+
     [self p_fireReadyIfNeeded];
 }
 
 - (void)p_fireReadyIfNeeded {
-    if (_readyEventFired || !_metalReady || !_css_onReady) {
+    if (_readyEventFired || _css_onReady == nil) {
         return;
     }
     _readyEventFired = YES;
@@ -167,43 +179,36 @@
 
 #pragma mark - 颜色处理
 
-/** 解析 #AARRGGBB / #RRGGBB，解析失败返回 NO 且不改写 color */
-- (BOOL)p_parseColor:(NSString *)colorString into:(double *)color {
+/** 解析 #AARRGGBB / #RRGGBB / #RGB，失败返回 NO 且不改写 argb */
+- (BOOL)p_parseArgb:(NSString *)colorString into:(uint32_t *)argb {
     if (![colorString isKindOfClass:[NSString class]] || colorString.length == 0) {
         return NO;
     }
     NSString *hex = [colorString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     hex = [hex hasPrefix:@"#"] ? [hex substringFromIndex:1] : hex;
+    if (hex.length == 3) {
+        unichar r = [hex characterAtIndex:0];
+        unichar g = [hex characterAtIndex:1];
+        unichar b = [hex characterAtIndex:2];
+        hex = [NSString stringWithFormat:@"%C%C%C%C%C%C", r, r, g, g, b, b];
+    }
+    if (hex.length != 6 && hex.length != 8) {
+        return NO;
+    }
     unsigned long long value = 0;
     NSScanner *scanner = [NSScanner scannerWithString:hex];
     if (![scanner scanHexLongLong:&value] || !scanner.isAtEnd) {
         return NO;
     }
-    CGFloat r = 0, g = 0, b = 0, a = 1;
-    if (hex.length == 8) {
-        a = ((value >> 24) & 0xFF) / 255.0;
-        r = ((value >> 16) & 0xFF) / 255.0;
-        g = ((value >> 8) & 0xFF) / 255.0;
-        b = (value & 0xFF) / 255.0;
-    } else if (hex.length == 6) {
-        r = ((value >> 16) & 0xFF) / 255.0;
-        g = ((value >> 8) & 0xFF) / 255.0;
-        b = (value & 0xFF) / 255.0;
-    } else {
-        return NO;
-    }
-    color[0] = (double)r;
-    color[1] = (double)g;
-    color[2] = (double)b;
-    color[3] = (double)a;
+    *argb = (hex.length == 6) ? (uint32_t)(0xFF000000u | value) : (uint32_t)value;
     return YES;
 }
 
-- (UIColor *)p_uiColorWithCurrentClearColor {
-    return [UIColor colorWithRed:(CGFloat)_clearColor[0]
-                           green:(CGFloat)_clearColor[1]
-                            blue:(CGFloat)_clearColor[2]
-                           alpha:(CGFloat)_clearColor[3]];
+- (UIColor *)p_uiColorFromArgb:(uint32_t)argb {
+    return [UIColor colorWithRed:((argb >> 16) & 0xFF) / 255.0
+                           green:((argb >> 8) & 0xFF) / 255.0
+                            blue:(argb & 0xFF) / 255.0
+                           alpha:((argb >> 24) & 0xFF) / 255.0];
 }
 
 @end

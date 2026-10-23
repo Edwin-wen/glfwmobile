@@ -31,6 +31,8 @@ kotlin {
                 // Import web render, for specific business should use actual version, for example:
                 implementation("com.tencent.kuikly-open.core-render-web:base:${Version.getKuiklyVersion()}")
                 implementation("com.tencent.kuikly-open.core-render-web:h5:${Version.getKuiklyVersion()}")
+                // 跨端 scene 解析 + CanvasKit 播放器
+                implementation(project(":canvasWeb"))
             }
         }
     }
@@ -225,6 +227,53 @@ fun copyAssetsResource() {
 }
 
 /**
+ * 把 webpack 产物（index.html / h5App.js）同步到统一分发目录 build/distributions。
+ * Kotlin/JS 的默认输出目录是 build/dist/js/productionExecutable，
+ * 而页面资源（page/、assets/、canvaskit）都聚合在 distributions，这里补齐入口文件。
+ */
+fun copyJsDistribution() {
+    val sourceDir = Paths.get(
+        project.buildDir.absolutePath, "dist", "js", "productionExecutable"
+    ).toFile()
+    if (!sourceDir.exists()) {
+        println("H5 distribution not found: $sourceDir")
+        return
+    }
+    project.copy {
+        from(sourceDir) {
+            include("index.html", "h5App.js")
+        }
+        into(Paths.get(project.buildDir.absolutePath, "distributions").toFile())
+    }
+}
+
+/**
+ * 把 CanvasKit（Skia WASM）产物复制到 H5 分发目录与 dev server 静态目录。
+ * 产物由仓库根的 vcpkg/installed/wasm/canvaskit 提供（不入库）。
+ */
+fun copyCanvasKit() {
+    val sourceDir = Paths.get(
+        project.rootDir.absolutePath,
+        "vcpkg", "installed", "wasm", "canvaskit"
+    ).toFile()
+    if (!sourceDir.exists()) {
+        println("CanvasKit artifacts not found: $sourceDir")
+        return
+    }
+    listOf(
+        Paths.get(project.rootDir.absolutePath, "h5App", "build", "distributions").toFile(),
+        Paths.get(project.rootDir.absolutePath, "static_server", "static").toFile()
+    ).forEach { dest ->
+        project.copy {
+            from(sourceDir) {
+                include("canvaskit.js", "canvaskit.wasm")
+            }
+            into(dest)
+        }
+    }
+}
+
+/**
  * Copy assets resources to webpack dev server static directory
  */
 fun copyAssetsFileToWebpackDevServer() {
@@ -270,6 +319,8 @@ project.afterEvaluate {
             include("nativevue2.js")
         }
         into(Paths.get(project.rootDir.absolutePath, "static_server", "static").toFile())
+        // CanvasKit 的 js/wasm 与业务 bundle 同目录，dev server 直接以相对路径加载
+        doLast { copyCanvasKit() }
     }
 
     // 启动 H5 调试服务器前，保证业务 bundle 已就位
@@ -289,6 +340,9 @@ project.afterEvaluate {
         // Copy assets resources
         copyAssetsResource()
         doLast {
+            // webpack 产物入口 + CanvasKit 产物随页面一起分发
+            copyJsDistribution()
+            copyCanvasKit()
             // Finally modify html file page.js reference
             generateLocalHtml()
         }
@@ -305,6 +359,9 @@ project.afterEvaluate {
         // Copy assets resources
         copyAssetsResource()
         doLast {
+            // webpack 产物入口 + CanvasKit 产物随页面一起分发
+            copyJsDistribution()
+            copyCanvasKit()
             // Finally modify html file page.js reference
             generateSplitHtml()
         }

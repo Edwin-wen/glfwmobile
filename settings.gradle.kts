@@ -25,5 +25,6 @@ dependencyResolutionManagement {
 rootProject.name = "glfwmobile"
 include(":androidApp")
 include(":shared")
+include(":canvasWeb")
 include(":h5App")
 include(":miniApp")

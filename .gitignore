@@ -64,3 +64,6 @@ miniApp/dist/project.private.config.json
 ## CanvasKit（wasm）本地源码与构建目录
 /vcpkg/wasm/skia/
 /vcpkg/wasm/out/
+## H5 调试静态目录中的生成物（CanvasKit 由 vcpkg 产物拷入）
+/static_server/static/canvaskit.js
+/static_server/static/canvaskit.wasm

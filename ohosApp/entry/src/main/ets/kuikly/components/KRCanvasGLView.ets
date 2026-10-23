@@ -1,18 +1,20 @@
 import { KRAny, KuiklyRenderBaseView, KuiklyRenderCallback } from '@kuikly-open/render';
-import { ComponentContent } from '@kit.ArkUI';
+import { ComponentContent, display } from '@kit.ArkUI';
 import nativeEntry from 'libentry.so';
 
 const kClearColor = 'clearColor';
+const kScene = 'scene';
 const kOnReady = 'onReady';
 
 /**
- * Kuikly 自定义 View：原生 OpenGL 画布（鸿蒙实现）
+ * Kuikly 自定义 View：Skia 画布（鸿蒙实现）
  *
  * 对应 Kuikly 侧 `com.edwin.glfwmobile.canvas.CanvasGLView`（viewName = CanvasGLView）。
  *
- * 实现说明：使用 XComponent(SURFACE) 承载渲染，真正的绘制在 native 侧
- * （`entry/src/main/cpp/canvas_gl_render.cpp`）通过 EGL + OpenGL ES 3.0 完成，
- * 静态画面仅在 Surface 创建/尺寸变化时清屏一次，不做常驻刷新。
+ * 实现说明：XComponent(SURFACE) 提供渲染表面；native 侧
+ * （`entry/src/main/cpp/canvas_gl_render.cpp`）用 canvas_core（C++ / Skia）光栅化到
+ * RGBA 缓冲，再通过 EGL + GLES3 上传纹理铺满 Surface。
+ * 绘制指令五端共用同一份 scene JSON。
  */
 @Observed
 export class KRCanvasGLView extends KuiklyRenderBaseView {
@@ -23,6 +25,7 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
   readonly xComponentId: string = `krcanvasgl_${KRCanvasGLView.idSeed++}`;
 
   cssClearColor: string | null = null;
+  cssScene: string | null = null;
   private cssOnReady: KuiklyRenderCallback | null = null;
 
   createArkUIView(): ComponentContent<KuiklyRenderBaseView> {
@@ -40,6 +43,10 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
         this.cssClearColor = propValue as string;
         this.applyClearColorToNative();
         return true;
+      case kScene:
+        this.cssScene = propValue as string;
+        this.applySceneToNative();
+        return true;
       case kOnReady:
         this.cssOnReady = propValue as KuiklyRenderCallback;
         return true;
@@ -54,7 +61,7 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
 
   /**
    * 把清屏颜色透传给 native 渲染器。
-   * native 侧在 Surface 尚未就绪时会先缓存颜色，待首帧绘制时生效。
+   * native 侧在 Surface 尚未就绪时会先缓存，待首帧绘制时生效。
    */
   applyClearColorToNative(): void {
     const color = this.cssClearColor;
@@ -65,6 +72,29 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
       nativeEntry.setCanvasClearColor(this.xComponentId, color);
     } catch (e) {
       console.error(`KuiklyRender KRCanvasGLView setCanvasClearColor failed: ${JSON.stringify(e)}`);
+    }
+  }
+
+  /** 把 scene（统一绘制指令）透传给 canvas_core */
+  applySceneToNative(): void {
+    const scene = this.cssScene;
+    if (scene == null || scene.length == 0) {
+      return;
+    }
+    try {
+      nativeEntry.setCanvasScene(this.xComponentId, scene);
+    } catch (e) {
+      console.error(`KuiklyRender KRCanvasGLView setCanvasScene failed: ${JSON.stringify(e)}`);
+    }
+  }
+
+  /** scene 坐标是 vp，XComponent 尺寸是物理像素，这里同步像素密度 */
+  applyPixelRatioToNative(): void {
+    try {
+      const ratio = display.getDefaultDisplaySync().densityPixels;
+      nativeEntry.setCanvasPixelRatio(this.xComponentId, ratio);
+    } catch (e) {
+      console.error(`KuiklyRender KRCanvasGLView setCanvasPixelRatio failed: ${JSON.stringify(e)}`);
     }
   }
 
@@ -90,8 +120,10 @@ export struct KRCanvasGLViewContent {
       .width('100%')
       .height('100%')
       .onLoad(() => {
-        // Surface 已创建：同步一次颜色并通知 Kuikly 画布就绪
+        // Surface 已创建：同步一次像素密度 / 颜色 / 场景，并通知 Kuikly 画布就绪
+        this.renderView.applyPixelRatioToNative();
         this.renderView.applyClearColorToNative();
+        this.renderView.applySceneToNative();
         this.renderView.fireReady();
       })
   }

@@ -43,6 +43,8 @@ kotlin {
                 // Import web render
                 implementation("com.tencent.kuikly-open.core-render-web:base:${Version.getKuiklyVersion()}")
                 implementation("com.tencent.kuikly-open.core-render-web:miniapp:${Version.getKuiklyVersion()}")
+                // 跨端 scene 解析（与原生 canvasCore / H5 CanvasKit 共用同一份指令语义）
+                implementation(project(":canvasWeb"))
             }
         }
     }

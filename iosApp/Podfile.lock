@@ -1,4 +1,5 @@
 PODS:
+  - canvas_core (1.0.0)
   - OpenKuiklyIOSRender (2.7.0)
   - SDWebImage (5.21.7):
     - SDWebImage/Core (= 5.21.7)
@@ -6,6 +7,7 @@ PODS:
   - shared (1.0)
 
 DEPENDENCIES:
+  - canvas_core (from `../cppCore/canvasCore`)
   - OpenKuiklyIOSRender (~> 2.7.0)
   - SDWebImage
   - shared (from `../shared`)
@@ -16,14 +18,17 @@ SPEC REPOS:
     - SDWebImage
 
 EXTERNAL SOURCES:
+  canvas_core:
+    :path: "../cppCore/canvasCore"
   shared:
     :path: "../shared"
 
 SPEC CHECKSUMS:
+  canvas_core: a0619c08c4340315a38b6b8d1185c1a77ea34a3f
   OpenKuiklyIOSRender: 2e6f7be3adae40f8167bb56a3e6803d1b18fd16e
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   shared: 45c4d5a3fe6bf89e105d0ff0f3587f64ad21dd48
 
-PODFILE CHECKSUM: 10010cf4aa421711ee8f708033a2fae94c987409
+PODFILE CHECKSUM: 9ea15609214ebc09d53f42dd8bb920ea5be56242
 
 COCOAPODS: 1.16.2

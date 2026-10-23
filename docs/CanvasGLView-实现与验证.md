@@ -10,18 +10,22 @@
 
 ## 零、当前进度（绘制统一到 Skia）
 
-桥接链路已在五端跑通之后，绘制实现开始收敛到 **Skia**：业务侧只产出一份「场景指令」，原生端由
-`cppCore/canvasCore/`（C++ / Skia）播放，Web 端由 CanvasKit（Skia 的 WASM 构建）播放。
+桥接链路已在五端跑通之后，绘制实现收敛到 **Skia**：业务侧只产出一份「场景指令（scene ops）」，
+原生端由 `cppCore/canvasCore/`（C++ / Skia）播放，Web 端由 CanvasKit（H5）/ Canvas2D（小程序）播放。
 
-| 端 | 状态 | 说明 |
-| --- | --- | --- |
-| Android | **已迁移** | `View` + `Bitmap` + `cppCore/canvasCore` 光栅化，`?page_name=canvas` 实测 `#FF0000` |
-| iOS / 鸿蒙 | 待迁移 | 仍为本文档描述的 GL / Metal 清屏实现 |
-| H5 / 小程序 | 待迁移 | 仍为 WebGL 清屏实现；忽略新增的 `scene` 属性 |
+| 端 | 状态 | 实现 | 验证 |
+| --- | --- | --- | --- |
+| Android | **已迁移** | `View` + `Bitmap` + `canvas_core` 光栅化 | 模拟器实测纯红（截图有 P3 色彩管理偏移，系统 UI 同样偏移） |
+| iOS | **已迁移** | `UIView` + `CGImage`（`layer.contents`）+ `canvas_core` | `xcodebuild -sdk iphoneos` 编译链接通过（无模拟器 slice，需真机运行） |
+| 鸿蒙 | **已迁移** | `XComponent(SURFACE)` + EGL 纹理上传 + `canvas_core` | `hvigorw assembleHap` 产出签名 HAP，`libentry.so` 含 Skia 符号 |
+| H5 | **已迁移** | `<canvas>` + CanvasKit（Skia WASM） | 浏览器实测纯红，WebGL2 surface，无控制台错误 |
+| 小程序 | **已迁移** | `<canvas type="2d">` + Canvas2D 播放同一份 ops | 构建通过（`dist` 主包 1.4MB），需微信开发者工具验证 |
 
 - 契约：`cppCore/canvasCore/include/canvas_core.h`（C ABI）+ `shared/.../canvas/CanvasScene.kt`（scene DSL）
 - 已支持 op：`clear` / `rect` / `line`；坐标统一为逻辑像素，物理像素由 dpr 换算
-- 下文 4.1–4.5 描述的是**迁移前**的各端实现，作为后续端迁移的参考基线
+- Web 侧 scene 解析在 `canvasWeb/src/jsMain/.../WebScene.kt`，与 `canvasCore/src/scene.cpp` 逐条对齐
+- 小程序不使用 CanvasKit：`WXWebAssembly` + 主包 2MB 限制风险高，先用 Canvas2D 覆盖当前 op 集合
+- 下文 4.1–4.5 描述的是**迁移前**的各端实现，作为历史参考；当前实现在文末「九」
 
 ---
 
@@ -560,3 +564,54 @@ open iosApp/iosApp.xcodeproj   # 编译运行，首屏应为按钮，点击进�
 ./gradlew :miniApp:jsMiniAppProductionWebpack   # 产物落在 miniApp/dist，用微信开发者工具打开
 ```
 
+---
+
+## 九、统一绘制（Skia）实现清单
+
+### 9.1 分层
+
+```
+shared/commonMain           CanvasScene（scene DSL）
+        │  JSON（唯一绘制意图）
+        ├──────────────┬───────────────────────────┐
+        ▼              ▼                           ▼
+  Android/iOS/鸿蒙   H5                      小程序
+  cppCore/canvasCore CanvasKit（Skia WASM）  Canvas2D（同 ops 子集）
+  （C++ / Skia）
+        │
+        ├─ scene.cpp     JSON -> ops（jsmn）
+        ├─ painter.cpp   ops -> SkCanvas（与 Web 播放器逐条对齐）
+        └─ canvas_core.cpp  raster 表面（GPU 后端预留）
+```
+
+### 9.2 各端接入点
+
+| 端 | 文件 | 说明 |
+| --- | --- | --- |
+| 契约 | `cppCore/canvasCore/include/canvas_core.h` | 只暴露 C 类型：create/destroy/set_size/set_scene/set_clear_color/render_raster |
+| 共享 | `shared/.../canvas/CanvasScene.kt` | `clear/rect/line` 的 DSL 与 JSON 编码 |
+| Android | `androidApp/src/main/cpp/{CMakeLists.txt,skia_canvas_jni.cpp}`、`expandview/CanvasGLView.kt` | `Bitmap` 交出像素指针，Skia 直接画进去后 `drawBitmap` |
+| iOS | `cppCore/canvasCore/canvas_core.podspec`、`iosApp/.../CanvasGLView.m` | 本地 pod 编译 C++ 并链接 vcpkg Skia；raster 结果包成 `CGImage` 显示 |
+| 鸿蒙 | `ohosApp/entry/src/main/cpp/{CMakeLists.txt,canvas_gl_render.cpp,napi_init.cpp}`、`KRCanvasGLView.ets` | `XComponent` + EGL：Skia 光栅化到 RGBA，再上传纹理铺满 Surface |
+| H5 | `canvasWeb/.../CanvasKitRenderer.kt`、`h5App/.../components/CanvasGLView.kt` | CanvasKit 的 WebGL surface，失败回退软件 surface / CSS 纯色 |
+| 小程序 | `canvasWeb/.../WebScene.kt`、`miniApp/.../components/CanvasGLView.kt` | `type="2d"` + Canvas2D 播放同一份 ops |
+
+### 9.3 构建前置
+
+- Skia 产物由仓库根 `vcpkg/installed/<platform>/` 提供（**已 gitignore**）：
+  - `android/arm64-android`、`ios/arm64-ios`、`ohos/arm64-ohos`：静态库 + 头文件
+  - `wasm/canvaskit`：`canvaskit.js` + `canvaskit.wasm`
+- Android 可通过 `-Pskia.android.dir=<dir>` 或 `SKIA_ANDROID_DIR` 覆盖默认路径
+- iOS 需 `pod install`（`canvas_core` 本地 pod），Skia 静态库通过 `user_target_xcconfig` 链接；
+  产物 `minos 26.5` 会触发部署目标告警，后续应以 `IOS_DEPLOYMENT_TARGET=14.1` 重新构建
+- H5 的 `publishLocalJSBundle` 会把 `canvaskit.js/.wasm` 拷进 `build/distributions`，并把
+  `build/dist/js/productionExecutable` 的 `index.html`/`h5App.js` 一并聚合到该目录
+
+### 9.4 已知限制
+
+| # | 限制 | 影响 |
+| --- | --- | --- |
+| 1 | iOS 只有 device slice（arm64/arm64e） | 模拟器无法运行，需真机或补 simulator 构建 |
+| 2 | 鸿蒙 Skia 只提供 arm64 | 仅 arm64 设备/模拟器 |
+| 3 | 小程序用 Canvas2D 而非 CanvasKit | `blur/gradient/path` 等后续 op 需补 Canvas2D 实现或另开 WASM 方案 |
+| 4 | raster 为整帧重绘 | 动效场景需切 GPU 后端（Metal / EGL 直绘） |

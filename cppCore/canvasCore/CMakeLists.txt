@@ -33,8 +33,8 @@ target_include_directories(canvas_core
         ${SKIA_DIR}/include)
 
 # Skia 以静态库形式链接，符号只在本模块内部使用（对外只暴露 canvas_core.h 的 C ABI）。
-# 静态库之间存在互相引用（skia <-> freetype/harfbuzz），Android 上用 start-group 消除顺序依赖。
-if(ANDROID)
+# 静态库之间存在互相引用（skia <-> freetype/harfbuzz），用 start-group 消除顺序依赖。
+if(ANDROID OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     target_link_libraries(canvas_core PUBLIC -Wl,--start-group ${SKIA_LIBS} -Wl,--end-group)
 else()
     target_link_libraries(canvas_core PUBLIC ${SKIA_LIBS})

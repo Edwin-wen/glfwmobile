@@ -1,5 +1,9 @@
 package components
 
+import com.edwin.glfwmobile.canvas.WebSceneOp
+import com.edwin.glfwmobile.canvas.parseWebScene
+import com.edwin.glfwmobile.canvas.parseWebColor
+import com.edwin.glfwmobile.canvas.toCssRgba
 import com.tencent.kuikly.core.render.web.export.IKuiklyRenderViewExport
 import com.tencent.kuikly.core.render.web.ktx.Frame
 import com.tencent.kuikly.core.render.web.ktx.KRCssConst
@@ -10,42 +14,51 @@ import dom.MiniCanvasGLViewElement
 import org.w3c.dom.Element
 
 /**
- * Mini program CanvasGLView, rendering a solid color (red by default) with a WebGL canvas.
+ * 小程序 CanvasGLView：复用运行时内置的 `canvas` 模板（`type="2d"`）。
  *
- * The view name must be the same as the Kuikly side
- * `com.edwin.glfwmobile.canvas.CanvasGLView`.
+ * 绘制输入已统一为 scene ops（与原生 canvasCore / H5 CanvasKit 同一份 JSON），
+ * 这里用 Canvas2D 作为播放器：小程序无 C++ 运行时，CanvasKit(WASM) 在包体与
+ * WXWebAssembly 兼容性上风险较高，先用 Canvas2D 覆盖当前 op 集合。
  *
- * The mini program node is rendered asynchronously, so the canvas node is obtained
- * with a retrying SelectorQuery node query. When WebGL is unavailable, it degrades
- * to a solid CSS background color to keep the page from turning blank.
+ * 节点异步渲染，首次查询可能为空，沿用有界重试 + 纯色兜底。
  */
 class CanvasGLView : IKuiklyRenderViewExport {
 
     private val canvasElement = MiniCanvasGLViewElement()
 
-    private var gl: dynamic = null
+    private var ctx: dynamic = null
     private var canvasNode: dynamic = null
     private var clearColor: String = DEFAULT_CLEAR_COLOR
+    private var ops: List<WebSceneOp> = emptyList()
     private var readyCallback: KuiklyRenderCallback? = null
     private var readyNotified = false
     private var fallbackToSolidColor = false
     private var retryCount = 0
     private var canvasWidth = 0
     private var canvasHeight = 0
+    private var pixelRatio = 0.0
 
     override val ele: Element
         get() = canvasElement.unsafeCast<Element>()
 
     init {
-        // A WebGL canvas must declare its type explicitly
-        canvasElement.canvasType = MiniCanvasGLViewElement.TYPE_WEBGL
+        // Canvas2D 播放器：显式声明 2d 类型，模板会透传到 <canvas type="{{i.p2}}">
+        canvasElement.canvasType = MiniCanvasGLViewElement.TYPE_2D
+        applyScene(clearScene(clearColor))
     }
 
     override fun setProp(propKey: String, propValue: Any): Boolean {
         return when (propKey) {
             CLEAR_COLOR -> {
                 clearColor = propValue.unsafeCast<String>()
-                render()
+                if (parseWebColor(clearColor) != null) {
+                    applyScene(clearScene(clearColor))
+                }
+                true
+            }
+
+            SCENE -> {
+                applyScene(propValue.unsafeCast<String>())
                 true
             }
 
@@ -71,43 +84,49 @@ class CanvasGLView : IKuiklyRenderViewExport {
         }
     }
 
-    /**
-     * Clear the canvas once with the current color
-     */
-    private fun render() {
-        val context = gl
-        if (context == null) {
-            if (fallbackToSolidColor) {
-                applyFallbackColor()
-            } else {
-                obtainContextAndRender()
+    override fun resetProp(propKey: String): Boolean {
+        return when (propKey) {
+            CLEAR_COLOR, SCENE -> {
+                clearColor = DEFAULT_CLEAR_COLOR
+                applyScene(clearScene(clearColor))
+                true
             }
-            return
+
+            else -> super.resetProp(propKey)
         }
-        val node = canvasNode
-        if (node != null) {
-            // WebGL canvas needs an explicit drawing buffer size
-            if (node.width != canvasWidth) {
-                node.width = canvasWidth
-            }
-            if (node.height != canvasHeight) {
-                node.height = canvasHeight
-            }
-        }
-        val color = parseColor(clearColor)
-        context.viewport(0, 0, canvasWidth, canvasHeight)
-        context.clearColor(color[0], color[1], color[2], color[3])
-        context.clear(COLOR_BUFFER_BIT)
-        notifyReady()
     }
 
-    /**
-     * The canvas node is only available after the page data is flushed,
-     * so query it with a bounded retry
-     */
+    // ---------------- 内部实现 ----------------
+
+    private fun applyScene(sceneJson: String) {
+        val parsed = parseWebScene(sceneJson)
+        if (parsed == null) {
+            Log.warn(TAG, "invalid scene, keep current frame")
+            return
+        }
+        ops = parsed
+        render()
+    }
+
+    private fun render() {
+        if (fallbackToSolidColor) {
+            applyFallbackColor()
+            return
+        }
+        if (ops.isEmpty() || canvasWidth <= 0 || canvasHeight <= 0) {
+            return
+        }
+        if (ctx == null) {
+            obtainContextAndRender()
+            return
+        }
+        draw()
+    }
+
+    /** 小程序节点异步渲染，首次查询可能拿不到，用有界重试 */
     private fun obtainContextAndRender() {
         canvasElement.queryCanvasNode { node ->
-            if (gl != null) {
+            if (ctx != null) {
                 return@queryCanvasNode
             }
             if (node == null) {
@@ -120,24 +139,61 @@ class CanvasGLView : IKuiklyRenderViewExport {
                 }
                 return@queryCanvasNode
             }
-            canvasNode = node
-            val context = node.getContext("webgl")
+            val context = node.getContext("2d")
             if (context == null) {
-                Log.warn(TAG, "WebGL is unavailable, fallback to solid background: $clearColor")
+                Log.warn(TAG, "Canvas2D is unavailable, fallback to solid background")
                 applyFallbackColor()
                 return@queryCanvasNode
             }
-            gl = context
-            render()
+            canvasNode = node
+            ctx = context
+            applyCanvasSize(node)
+            draw()
         }
     }
 
-    /**
-     * Degrade to a solid CSS background color when WebGL is unavailable
-     */
+    private fun applyCanvasSize(node: dynamic) {
+        val ratio = dpr()
+        node.width = (canvasWidth * ratio).toInt().coerceAtLeast(1)
+        node.height = (canvasHeight * ratio).toInt().coerceAtLeast(1)
+    }
+
+    private fun draw() {
+        val context = ctx ?: return
+        val ratio = dpr()
+        context.setTransform(ratio, 0.0, 0.0, ratio, 0.0, 0.0)
+        context.clearRect(0.0, 0.0, canvasWidth.toDouble(), canvasHeight.toDouble())
+
+        for (op in ops) {
+            when (op) {
+                is WebSceneOp.Clear -> {
+                    context.fillStyle = op.color.toCssRgba()
+                    context.fillRect(0.0, 0.0, canvasWidth.toDouble(), canvasHeight.toDouble())
+                }
+
+                is WebSceneOp.Rect -> {
+                    context.fillStyle = op.color.toCssRgba()
+                    context.fillRect(op.x, op.y, op.w, op.h)
+                }
+
+                is WebSceneOp.Line -> {
+                    context.strokeStyle = op.color.toCssRgba()
+                    context.lineWidth = op.width
+                    context.lineCap = "round"
+                    context.beginPath()
+                    context.moveTo(op.x1, op.y1)
+                    context.lineTo(op.x2, op.y2)
+                    context.stroke()
+                }
+            }
+        }
+        notifyReady()
+    }
+
     private fun applyFallbackColor() {
         fallbackToSolidColor = true
-        canvasElement.style.backgroundColor = toCssColor(parseColor(clearColor))
+        val argb = parseWebColor(clearColor) ?: DEFAULT_CLEAR_COLOR_VALUE
+        canvasElement.style.backgroundColor = argb.toCssRgba()
         notifyReady()
     }
 
@@ -146,45 +202,34 @@ class CanvasGLView : IKuiklyRenderViewExport {
             return
         }
         readyNotified = true
-        readyCallback?.invoke(null)
+        readyCallback?.invoke(mapOf("viewName" to VIEW_NAME))
     }
 
-    /**
-     * Parse `#AARRGGBB` / `#RRGGBB` / `#RGB` color into [r, g, b, a] (0f ~ 1f)
-     */
-    private fun parseColor(color: String): FloatArray {
-        val hex = color.removePrefix("#")
-        val normalized = when (hex.length) {
-            8 -> hex
-            6 -> "FF$hex"
-            3 -> "FF" + hex.map { "$it$it" }.joinToString("")
-            else -> DEFAULT_CLEAR_COLOR.removePrefix("#")
+    private fun dpr(): Double {
+        if (pixelRatio <= 0.0) {
+            pixelRatio = try {
+                val info: dynamic = js("wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync()")
+                (info.pixelRatio as Number).toDouble()
+            } catch (e: dynamic) {
+                DEFAULT_PIXEL_RATIO
+            }
         }
-        val value = normalized.toLongOrNull(16) ?: return floatArrayOf(1f, 0f, 0f, 1f)
-        val a = ((value shr 24) and 0xFF) / 255f
-        val r = ((value shr 16) and 0xFF) / 255f
-        val g = ((value shr 8) and 0xFF) / 255f
-        val b = (value and 0xFF) / 255f
-        return floatArrayOf(r, g, b, a)
+        return pixelRatio
     }
 
-    private fun toCssColor(color: FloatArray): String {
-        val r = (color[0] * 255).toInt()
-        val g = (color[1] * 255).toInt()
-        val b = (color[2] * 255).toInt()
-        return "rgba($r, $g, $b, ${color[3]})"
-    }
+    private fun clearScene(color: String): String =
+        """{"ops":[{"op":"clear","color":"$color"}]}"""
 
     companion object {
         const val VIEW_NAME = "CanvasGLView"
         private const val TAG = "CanvasGLView"
         private const val CLEAR_COLOR = "clearColor"
+        private const val SCENE = "scene"
         private const val ON_READY = "onReady"
         private const val DEFAULT_CLEAR_COLOR = "#FFFF0000"
+        private const val DEFAULT_CLEAR_COLOR_VALUE = 0xFFFF0000L
+        private const val DEFAULT_PIXEL_RATIO = 2.0
         private const val MAX_QUERY_RETRY = 20
         private const val RETRY_DELAY_MILLIS = 50
-
-        /** WebGLRenderingContext.COLOR_BUFFER_BIT */
-        private const val COLOR_BUFFER_BIT = 0x4000
     }
 }

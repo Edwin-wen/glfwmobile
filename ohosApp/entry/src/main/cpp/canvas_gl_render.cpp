@@ -8,7 +8,11 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <vector>
+
+#include "canvas_core.h"
 
 #undef LOG_TAG
 #define LOG_TAG "CanvasGLView"
@@ -20,31 +24,87 @@ namespace {
 /** 默认清屏颜色：不透明红色 */
 constexpr float kDefaultClearColor[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 
+constexpr const char *kVertexShader = R"(#version 300 es
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() {
+    vUv = aUv;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+constexpr const char *kFragmentShader = R"(#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uTexture;
+out vec4 fragColor;
+void main() {
+    fragColor = texture(uTexture, vUv);
+}
+)";
+
+uint32_t ArgbFromRgba(const float *rgba) {
+    const auto channel = [](float value) -> uint32_t {
+        const float clamped = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+        return static_cast<uint32_t>(clamped * 255.0f + 0.5f);
+    };
+    return (channel(rgba[3]) << 24) | (channel(rgba[0]) << 16) | (channel(rgba[1]) << 8) |
+           channel(rgba[2]);
+}
+
 /**
- * 单个 XComponent 的 GL 渲染器。
- * 注意：XComponent 回调与 napi 调用都发生在 ArkUI UI 线程，无需额外跨线程保护。
+ * 单个 XComponent 的渲染器。
+ *
+ * 绘制统一由 canvas_core（C++ / Skia）光栅化到 RGBA 缓冲，再由 GL 上传纹理并铺满
+ * Surface。与 Android 的 Bitmap 路径、iOS 的 CGImage 路径是同一份 Skia 实现。
+ * 画面为静态内容，仅在 Surface 创建/尺寸变化/场景变化时重绘。
  */
 class CanvasGLRenderer {
 public:
-    CanvasGLRenderer()
-    {
+    CanvasGLRenderer() {
         std::memcpy(clearColor_, kDefaultClearColor, sizeof(clearColor_));
+        core_ = skc_create();
     }
 
-    ~CanvasGLRenderer()
-    {
+    ~CanvasGLRenderer() {
+        DestroyGLResources();
         DestroySurface();
         Terminate();
+        if (core_ != nullptr) {
+            skc_destroy(core_);
+            core_ = nullptr;
+        }
     }
 
-    void SetClearColor(const float *color)
-    {
+    void SetClearColor(const float *color) {
         std::memcpy(clearColor_, color, sizeof(clearColor_));
+        if (core_ != nullptr) {
+            skc_set_clear_color(core_, ArgbFromRgba(color));
+        }
         DrawFrame();
     }
 
-    void OnSurfaceCreated(OH_NativeXComponent *component, void *window)
-    {
+    void SetScene(const std::string &sceneJson) {
+        if (core_ != nullptr) {
+            skc_set_scene(core_, sceneJson.c_str());
+            const char *error = skc_last_error(core_);
+            if (error != nullptr && error[0] != '\0') {
+                LOG_ERROR("setScene failed: %{public}s", error);
+            }
+        }
+        DrawFrame();
+    }
+
+    void SetPixelRatio(float ratio) {
+        pixelRatio_ = ratio > 0.0f ? ratio : 1.0f;
+        if (core_ != nullptr && width_ > 0 && height_ > 0) {
+            skc_set_size(core_, width_, height_, pixelRatio_);
+        }
+        DrawFrame();
+    }
+
+    void OnSurfaceCreated(OH_NativeXComponent *component, void *window) {
         if (window == nullptr) {
             LOG_ERROR("%{public}s", "OnSurfaceCreated: window is null");
             return;
@@ -53,7 +113,8 @@ public:
             return;
         }
         DestroySurface();
-        eglWindow_ = eglCreateWindowSurface(display_, config_, reinterpret_cast<EGLNativeWindowType>(window), nullptr);
+        eglWindow_ = eglCreateWindowSurface(display_, config_,
+                                            reinterpret_cast<EGLNativeWindowType>(window), nullptr);
         if (eglWindow_ == EGL_NO_SURFACE) {
             LOG_ERROR("eglCreateWindowSurface failed, error: %{public}d", eglGetError());
             return;
@@ -63,14 +124,14 @@ public:
             DestroySurface();
             return;
         }
-        // Surface 刚创建时可能还未完成布局，先保证至少呈现一帧红色
+        EnsureGLResources();
+        // Surface 刚创建时可能还未完成布局，先保证至少呈现一帧
         glViewport(0, 0, 1, 1);
         DrawFrame();
         OnSurfaceChanged(component, window);
     }
 
-    void OnSurfaceChanged(OH_NativeXComponent *component, void *window)
-    {
+    void OnSurfaceChanged(OH_NativeXComponent *component, void *window) {
         if (eglWindow_ == EGL_NO_SURFACE || window == nullptr) {
             return;
         }
@@ -83,18 +144,26 @@ public:
         if (width == 0 || height == 0) {
             return;
         }
-        glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+        const int32_t newWidth = static_cast<int32_t>(width);
+        const int32_t newHeight = static_cast<int32_t>(height);
+        if (newWidth != width_ || newHeight != height_) {
+            width_ = newWidth;
+            height_ = newHeight;
+            pixels_.assign(static_cast<size_t>(width_) * height_ * 4, 0);
+            if (core_ != nullptr) {
+                skc_set_size(core_, width_, height_, pixelRatio_);
+            }
+        }
+        glViewport(0, 0, width_, height_);
         DrawFrame();
     }
 
-    void OnSurfaceDestroyed()
-    {
+    void OnSurfaceDestroyed() {
         DestroySurface();
     }
 
 private:
-    bool EnsureEGL()
-    {
+    bool EnsureEGL() {
         if (display_ != EGL_NO_DISPLAY && context_ != EGL_NO_CONTEXT) {
             return true;
         }
@@ -122,7 +191,8 @@ private:
             EGL_NONE
         };
         EGLint numConfigs = 0;
-        if (eglChooseConfig(display_, configAttribs, &config_, 1, &numConfigs) != EGL_TRUE || numConfigs < 1) {
+        if (eglChooseConfig(display_, configAttribs, &config_, 1, &numConfigs) != EGL_TRUE ||
+            numConfigs < 1) {
             LOG_ERROR("eglChooseConfig failed, error: %{public}d", eglGetError());
             Terminate();
             return false;
@@ -138,20 +208,128 @@ private:
         return true;
     }
 
-    void DrawFrame()
-    {
-        if (eglWindow_ == EGL_NO_SURFACE) {
+    bool EnsureGLResources() {
+        if (program_ != 0) {
+            return true;
+        }
+        const GLuint vertex = CompileShader(GL_VERTEX_SHADER, kVertexShader);
+        const GLuint fragment = CompileShader(GL_FRAGMENT_SHADER, kFragmentShader);
+        if (vertex == 0 || fragment == 0) {
+            return false;
+        }
+        program_ = glCreateProgram();
+        glAttachShader(program_, vertex);
+        glAttachShader(program_, fragment);
+        glLinkProgram(program_);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+
+        GLint linked = 0;
+        glGetProgramiv(program_, GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE) {
+            LOG_ERROR("%{public}s", "link program failed");
+            glDeleteProgram(program_);
+            program_ = 0;
+            return false;
+        }
+
+        // 全屏四边形（triangle strip），纹理坐标按像素行翻转（Skia 第 0 行在顶部）
+        const GLfloat vertices[] = {
+            -1.0f, -1.0f, 0.0f, 1.0f,
+            1.0f, -1.0f, 1.0f, 1.0f,
+            -1.0f, 1.0f, 0.0f, 0.0f,
+            1.0f, 1.0f, 1.0f, 0.0f
+        };
+        glGenVertexArrays(1, &vao_);
+        glBindVertexArray(vao_);
+        glGenBuffers(1, &vbo_);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), nullptr);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+                              reinterpret_cast<const void *>(2 * sizeof(GLfloat)));
+
+        glGenTextures(1, &texture_);
+        glBindTexture(GL_TEXTURE_2D, texture_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindVertexArray(0);
+        return true;
+    }
+
+    GLuint CompileShader(GLenum type, const char *source) {
+        const GLuint shader = glCreateShader(type);
+        glShaderSource(shader, 1, &source, nullptr);
+        glCompileShader(shader);
+        GLint compiled = 0;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+        if (compiled != GL_TRUE) {
+            GLint length = 0;
+            glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+            std::string log(static_cast<size_t>(length > 0 ? length : 1), '\0');
+            glGetShaderInfoLog(shader, length, nullptr, &log[0]);
+            LOG_ERROR("compile shader failed: %{public}s", log.c_str());
+            glDeleteShader(shader);
+            return 0;
+        }
+        return shader;
+    }
+
+    void DrawFrame() {
+        if (eglWindow_ == EGL_NO_SURFACE || width_ <= 0 || height_ <= 0) {
             return;
         }
+        const bool skiaReady =
+            core_ != nullptr && !pixels_.empty() &&
+            skc_render_raster(core_, pixels_.data(), width_ * 4, width_, height_);
+
+        glViewport(0, 0, width_, height_);
         glClearColor(clearColor_[0], clearColor_[1], clearColor_[2], clearColor_[3]);
         glClear(GL_COLOR_BUFFER_BIT);
+
+        if (skiaReady && program_ != 0 && texture_ != 0) {
+            glUseProgram(program_);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texture_);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_, height_, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, pixels_.data());
+            glUniform1i(glGetUniformLocation(program_, "uTexture"), 0);
+            glBindVertexArray(vao_);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindVertexArray(0);
+            glUseProgram(0);
+        }
+
         if (eglSwapBuffers(display_, eglWindow_) != EGL_TRUE) {
             LOG_ERROR("eglSwapBuffers failed, error: %{public}d", eglGetError());
         }
     }
 
-    void DestroySurface()
-    {
+    void DestroyGLResources() {
+        if (texture_ != 0) {
+            glDeleteTextures(1, &texture_);
+            texture_ = 0;
+        }
+        if (vbo_ != 0) {
+            glDeleteBuffers(1, &vbo_);
+            vbo_ = 0;
+        }
+        if (vao_ != 0) {
+            glDeleteVertexArrays(1, &vao_);
+            vao_ = 0;
+        }
+        if (program_ != 0) {
+            glDeleteProgram(program_);
+            program_ = 0;
+        }
+    }
+
+    void DestroySurface() {
         if (display_ == EGL_NO_DISPLAY) {
             eglWindow_ = EGL_NO_SURFACE;
             return;
@@ -166,8 +344,7 @@ private:
         }
     }
 
-    void Terminate()
-    {
+    void Terminate() {
         if (display_ == EGL_NO_DISPLAY) {
             return;
         }
@@ -180,31 +357,42 @@ private:
         config_ = nullptr;
     }
 
+    skc_canvas *core_ = nullptr;
+    std::vector<uint8_t> pixels_;
+    int32_t width_ = 0;
+    int32_t height_ = 0;
+    float pixelRatio_ = 1.0f;
+
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLConfig config_ = nullptr;
     EGLContext context_ = EGL_NO_CONTEXT;
     EGLSurface eglWindow_ = EGL_NO_SURFACE;
+
+    GLuint program_ = 0;
+    GLuint vao_ = 0;
+    GLuint vbo_ = 0;
+    GLuint texture_ = 0;
+
     float clearColor_[4] = {1.0f, 0.0f, 0.0f, 1.0f};
 };
 
 std::mutex g_rendererMutex;
 std::unordered_map<std::string, std::unique_ptr<CanvasGLRenderer>> g_renderers;
 
-std::string GetXComponentId(OH_NativeXComponent *component)
-{
+std::string GetXComponentId(OH_NativeXComponent *component) {
     if (component == nullptr) {
         return "";
     }
     char idBuffer[OH_XCOMPONENT_ID_LEN_MAX + 1] = {'\0'};
     uint64_t idSize = OH_XCOMPONENT_ID_LEN_MAX + 1;
-    if (OH_NativeXComponent_GetXComponentId(component, idBuffer, &idSize) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+    if (OH_NativeXComponent_GetXComponentId(component, idBuffer, &idSize) !=
+        OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
         return "";
     }
     return std::string(idBuffer, static_cast<size_t>(idSize));
 }
 
-CanvasGLRenderer *GetOrCreateRenderer(const std::string &id)
-{
+CanvasGLRenderer *GetOrCreateRenderer(const std::string &id) {
     if (id.empty()) {
         return nullptr;
     }
@@ -216,14 +404,12 @@ CanvasGLRenderer *GetOrCreateRenderer(const std::string &id)
     return renderer.get();
 }
 
-void RemoveRenderer(const std::string &id)
-{
+void RemoveRenderer(const std::string &id) {
     std::lock_guard<std::mutex> lock(g_rendererMutex);
     g_renderers.erase(id);
 }
 
-bool ParseHexColor(const std::string &color, float *out)
-{
+bool ParseHexColor(const std::string &color, float *out) {
     std::string hex = color;
     if (!hex.empty() && hex[0] == '#') {
         hex = hex.substr(1);
@@ -260,24 +446,21 @@ bool ParseHexColor(const std::string &color, float *out)
 
 // ---------------- XComponent 生命周期回调 ----------------
 
-void OnSurfaceCreatedCB(OH_NativeXComponent *component, void *window)
-{
+void OnSurfaceCreatedCB(OH_NativeXComponent *component, void *window) {
     CanvasGLRenderer *renderer = GetOrCreateRenderer(GetXComponentId(component));
     if (renderer != nullptr) {
         renderer->OnSurfaceCreated(component, window);
     }
 }
 
-void OnSurfaceChangedCB(OH_NativeXComponent *component, void *window)
-{
+void OnSurfaceChangedCB(OH_NativeXComponent *component, void *window) {
     CanvasGLRenderer *renderer = GetOrCreateRenderer(GetXComponentId(component));
     if (renderer != nullptr) {
         renderer->OnSurfaceChanged(component, window);
     }
 }
 
-void OnSurfaceDestroyedCB(OH_NativeXComponent *component, void *window)
-{
+void OnSurfaceDestroyedCB(OH_NativeXComponent *component, void *window) {
     (void)window;
     const std::string id = GetXComponentId(component);
     CanvasGLRenderer *renderer = GetOrCreateRenderer(id);
@@ -287,8 +470,7 @@ void OnSurfaceDestroyedCB(OH_NativeXComponent *component, void *window)
     RemoveRenderer(id);
 }
 
-void DispatchTouchEventCB(OH_NativeXComponent *component, void *window)
-{
+void DispatchTouchEventCB(OH_NativeXComponent *component, void *window) {
     (void)component;
     (void)window;
 }
@@ -302,8 +484,7 @@ OH_NativeXComponent_Callback g_canvasCallback = {
 
 } // namespace
 
-int32_t RegisterCanvasGLXComponent(OH_NativeXComponent *component)
-{
+int32_t RegisterCanvasGLXComponent(OH_NativeXComponent *component) {
     if (component == nullptr) {
         LOG_ERROR("%{public}s", "RegisterCanvasGLXComponent: component is null");
         return -1;
@@ -315,7 +496,8 @@ int32_t RegisterCanvasGLXComponent(OH_NativeXComponent *component)
     }
     // 提前创建渲染器，避免首帧丢失
     GetOrCreateRenderer(id);
-    if (OH_NativeXComponent_RegisterCallback(component, &g_canvasCallback) != OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+    if (OH_NativeXComponent_RegisterCallback(component, &g_canvasCallback) !=
+        OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
         LOG_ERROR("%{public}s", "OH_NativeXComponent_RegisterCallback failed");
         return -1;
     }
@@ -323,8 +505,7 @@ int32_t RegisterCanvasGLXComponent(OH_NativeXComponent *component)
     return 0;
 }
 
-void SetCanvasGLClearColor(const std::string &xComponentId, const std::string &color)
-{
+void SetCanvasGLClearColor(const std::string &xComponentId, const std::string &color) {
     float rgba[4] = {1.0f, 0.0f, 0.0f, 1.0f};
     if (!ParseHexColor(color, rgba)) {
         LOG_ERROR("invalid clearColor: %{public}s", color.c_str());
@@ -337,8 +518,21 @@ void SetCanvasGLClearColor(const std::string &xComponentId, const std::string &c
     }
 }
 
-napi_value NapiSetCanvasClearColor(napi_env env, napi_callback_info info)
-{
+void SetCanvasGLScene(const std::string &xComponentId, const std::string &sceneJson) {
+    CanvasGLRenderer *renderer = GetOrCreateRenderer(xComponentId);
+    if (renderer != nullptr) {
+        renderer->SetScene(sceneJson);
+    }
+}
+
+void SetCanvasGLPixelRatio(const std::string &xComponentId, float ratio) {
+    CanvasGLRenderer *renderer = GetOrCreateRenderer(xComponentId);
+    if (renderer != nullptr) {
+        renderer->SetPixelRatio(ratio);
+    }
+}
+
+napi_value NapiSetCanvasClearColor(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2] = {nullptr};
     if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc < 2) {
@@ -352,15 +546,61 @@ napi_value NapiSetCanvasClearColor(napi_env env, napi_callback_info info)
     }
     char colorBuffer[32] = {'\0'};
     size_t colorLength = 0;
-    if (napi_get_value_string_utf8(env, args[1], colorBuffer, sizeof(colorBuffer), &colorLength) != napi_ok) {
+    if (napi_get_value_string_utf8(env, args[1], colorBuffer, sizeof(colorBuffer), &colorLength) !=
+        napi_ok) {
         return nullptr;
     }
     SetCanvasGLClearColor(std::string(idBuffer, idLength), std::string(colorBuffer, colorLength));
     return nullptr;
 }
 
-void ReleaseAllCanvasGLRenderers()
-{
+napi_value NapiSetCanvasScene(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr};
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc < 2) {
+        LOG_ERROR("%{public}s", "setCanvasScene: invalid arguments");
+        return nullptr;
+    }
+    char idBuffer[OH_XCOMPONENT_ID_LEN_MAX + 1] = {'\0'};
+    size_t idLength = 0;
+    if (napi_get_value_string_utf8(env, args[0], idBuffer, sizeof(idBuffer), &idLength) != napi_ok) {
+        return nullptr;
+    }
+    size_t jsonLength = 0;
+    if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &jsonLength) != napi_ok) {
+        return nullptr;
+    }
+    std::string sceneJson(jsonLength + 1, '\0');
+    if (napi_get_value_string_utf8(env, args[1], &sceneJson[0], jsonLength + 1, &jsonLength) !=
+        napi_ok) {
+        return nullptr;
+    }
+    sceneJson.resize(jsonLength);
+    SetCanvasGLScene(std::string(idBuffer, idLength), sceneJson);
+    return nullptr;
+}
+
+napi_value NapiSetCanvasPixelRatio(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr};
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc < 2) {
+        LOG_ERROR("%{public}s", "setCanvasPixelRatio: invalid arguments");
+        return nullptr;
+    }
+    char idBuffer[OH_XCOMPONENT_ID_LEN_MAX + 1] = {'\0'};
+    size_t idLength = 0;
+    if (napi_get_value_string_utf8(env, args[0], idBuffer, sizeof(idBuffer), &idLength) != napi_ok) {
+        return nullptr;
+    }
+    double ratio = 1.0;
+    if (napi_get_value_double(env, args[1], &ratio) != napi_ok) {
+        return nullptr;
+    }
+    SetCanvasGLPixelRatio(std::string(idBuffer, idLength), static_cast<float>(ratio));
+    return nullptr;
+}
+
+void ReleaseAllCanvasGLRenderers() {
     std::unordered_map<std::string, std::unique_ptr<CanvasGLRenderer>> renderers;
     {
         std::lock_guard<std::mutex> lock(g_rendererMutex);

@@ -15,8 +15,9 @@ Pod::Spec.new do |s|
   s.platform         = :ios, '14.1'
   s.static_framework = true
   s.requires_arc     = true
+  s.frameworks       = 'OpenGLES', 'QuartzCore', 'UIKit'
 
-  s.source_files         = 'include/**/*.h', 'src/**/*.{h,cpp}', 'third_party/**/*.h'
+  s.source_files         = 'include/**/*.h', 'src/**/*.{h,cpp,mm}', 'third_party/**/*.h'
   s.public_header_files  = 'include/**/*.h'
   s.preserve_paths       = 'third_party/*.h'
 
@@ -27,6 +28,8 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY'           => 'libc++',
+    # EAGL 实现的 .mm 需要 framework 形式的 OpenGLES 头文件
+    'FRAMEWORK_SEARCH_PATHS'      => '"$(SDKROOT)/System/Library/Frameworks"',
     'HEADER_SEARCH_PATHS'         => [
       '"$(PODS_TARGET_SRCROOT)/include"',
       '"$(PODS_TARGET_SRCROOT)/src"',
@@ -46,7 +49,8 @@ Pod::Spec.new do |s|
                    '-lbrotlidec -lbrotlicommon -lbz2 -lc++'
 
   s.user_target_xcconfig = {
-    'OTHER_LDFLAGS' => skia_lib_flags
+    # App 侧只创建 CAEAGLLayer，不引入 OpenGLES 头文件；present 由 canvas_core 负责
+    'OTHER_LDFLAGS' => skia_lib_flags + ' -framework QuartzCore'
   }
   s.libraries = 'c++'
 end

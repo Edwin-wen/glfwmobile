@@ -21,7 +21,8 @@ endif()
 add_library(canvas_core STATIC
         src/scene.cpp
         src/painter.cpp
-        src/canvas_core.cpp)
+        src/canvas_core.cpp
+        src/gpu_surface_gl.cpp)
 
 target_include_directories(canvas_core
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

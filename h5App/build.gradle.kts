@@ -334,11 +334,11 @@ project.afterEvaluate {
 
         // First execute h5App build task
         dependsOn("jsBrowserDistribution")
-        // Then copy corresponding nativevue2.zip from business build result and copy nativevue2.js
-        // to h5App's release directory
-        copyLocalJSBundle()
-        // Copy assets resources
-        copyAssetsResource()
+        // 产物拷贝必须在依赖任务执行之后（doFirst），否则拿到的是上一轮的 zip
+        doFirst {
+            copyLocalJSBundle()
+            copyAssetsResource()
+        }
         doLast {
             // webpack 产物入口 + CanvasKit 产物随页面一起分发
             copyJsDistribution()
@@ -354,10 +354,10 @@ project.afterEvaluate {
 
         // First execute h5App build task
         dependsOn("jsBrowserDistribution")
-        // Then copy corresponding page js from business build result to h5App's release directory
-        copySplitJSBundle()
-        // Copy assets resources
-        copyAssetsResource()
+        doFirst {
+            copySplitJSBundle()
+            copyAssetsResource()
+        }
         doLast {
             // webpack 产物入口 + CanvasKit 产物随页面一起分发
             copyJsDistribution()

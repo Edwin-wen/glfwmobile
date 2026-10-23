@@ -21,6 +21,8 @@ internal class CanvasPage : BasePager() {
                     size(ctx.pagerData.pageViewWidth, ctx.pagerData.pageViewHeight)
                     // 唯一的绘制意图：原生端由 canvasCore(C++/Skia) 播放，Web 端由 CanvasKit 播放
                     scene(CanvasScene.clear(0xFFFF0000))
+                    // 绘制后端开关：AUTO 优先 GPU、失败回退 raster
+                    backend(CanvasBackend.AUTO)
                 }
             }
         }

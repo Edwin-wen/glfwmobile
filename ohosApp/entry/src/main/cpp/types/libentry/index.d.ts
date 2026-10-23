@@ -20,3 +20,10 @@ export const setCanvasScene: (xComponentId: string, sceneJson: string) => void;
  * @param ratio 像素密度（display.densityPixels）
  */
 export const setCanvasPixelRatio: (xComponentId: string, ratio: number) => void;
+
+/**
+ * 设置绘制后端
+ * @param xComponentId XComponent 组件的 id
+ * @param mode 0=raster 1=gpu 2=auto
+ */
+export const setCanvasBackend: (xComponentId: string, mode: number) => void;

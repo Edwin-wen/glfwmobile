@@ -4,6 +4,7 @@ import nativeEntry from 'libentry.so';
 
 const kClearColor = 'clearColor';
 const kScene = 'scene';
+const kBackend = 'backend';
 const kOnReady = 'onReady';
 
 /**
@@ -26,6 +27,7 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
 
   cssClearColor: string | null = null;
   cssScene: string | null = null;
+  cssBackend: string | null = null;
   private cssOnReady: KuiklyRenderCallback | null = null;
 
   createArkUIView(): ComponentContent<KuiklyRenderBaseView> {
@@ -46,6 +48,10 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
       case kScene:
         this.cssScene = propValue as string;
         this.applySceneToNative();
+        return true;
+      case kBackend:
+        this.cssBackend = propValue as string;
+        this.applyBackendToNative();
         return true;
       case kOnReady:
         this.cssOnReady = propValue as KuiklyRenderCallback;
@@ -98,6 +104,22 @@ export class KRCanvasGLView extends KuiklyRenderBaseView {
     }
   }
 
+  /** 绘制后端：0=raster 1=gpu 2=auto，与 canvas_core.h 的 skc_backend 对齐 */
+  applyBackendToNative(): void {
+    const backend = this.cssBackend;
+    let mode = 2;
+    if (backend == 'raster') {
+      mode = 0;
+    } else if (backend == 'gpu') {
+      mode = 1;
+    }
+    try {
+      nativeEntry.setCanvasBackend(this.xComponentId, mode);
+    } catch (e) {
+      console.error(`KuiklyRender KRCanvasGLView setCanvasBackend failed: ${JSON.stringify(e)}`);
+    }
+  }
+
   /** XComponent 创建成功（Surface 已就绪）后回调 Kuikly */
   fireReady(): void {
     const callback = this.cssOnReady;
@@ -120,8 +142,9 @@ export struct KRCanvasGLViewContent {
       .width('100%')
       .height('100%')
       .onLoad(() => {
-        // Surface 已创建：同步一次像素密度 / 颜色 / 场景，并通知 Kuikly 画布就绪
+        // Surface 已创建：同步一次像素密度 / 后端 / 颜色 / 场景，并通知 Kuikly 画布就绪
         this.renderView.applyPixelRatioToNative();
+        this.renderView.applyBackendToNative();
         this.renderView.applyClearColorToNative();
         this.renderView.applySceneToNative();
         this.renderView.fireReady();

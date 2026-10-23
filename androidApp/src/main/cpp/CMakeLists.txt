@@ -8,4 +8,4 @@ add_subdirectory(${SKC_DIR}/cppCore/canvasCore canvasCore)
 
 add_library(skia_canvas SHARED skia_canvas_jni.cpp)
 target_include_directories(skia_canvas PRIVATE ${SKC_DIR}/cppCore/canvasCore/include)
-target_link_libraries(skia_canvas canvas_core jnigraphics android log)
+target_link_libraries(skia_canvas canvas_core jnigraphics android log EGL GLESv3)

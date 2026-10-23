@@ -104,6 +104,20 @@ public:
         DrawFrame();
     }
 
+    /** mode: 0=raster 1=gpu 2=auto */
+    void SetBackend(int32_t mode) {
+        backend_ = mode;
+        if (mode == 0) {
+            gpuAttached_ = false;
+            if (core_ != nullptr) {
+                skc_set_backend(core_, SKC_BACKEND_RASTER);
+            }
+        } else if (core_ != nullptr) {
+            skc_set_backend(core_, static_cast<skc_backend>(mode));
+        }
+        DrawFrame();
+    }
+
     void OnSurfaceCreated(OH_NativeXComponent *component, void *window) {
         if (window == nullptr) {
             LOG_ERROR("%{public}s", "OnSurfaceCreated: window is null");
@@ -283,6 +297,24 @@ private:
         if (eglWindow_ == EGL_NO_SURFACE || width_ <= 0 || height_ <= 0) {
             return;
         }
+
+        // 优先 GPU：Skia Ganesh 直接画到 EGLSurface 的默认帧缓冲（FBO 0）
+        if (backend_ != 0 && core_ != nullptr) {
+            if (!gpuAttached_) {
+                skc_set_backend(core_, static_cast<skc_backend>(backend_));
+                gpuAttached_ = skc_attach_gl(core_);
+                if (!gpuAttached_) {
+                    LOG_ERROR("gpu attach failed: %{public}s", skc_last_error(core_));
+                }
+            }
+            if (gpuAttached_ && skc_render_gl(core_, 0, width_, height_)) {
+                if (eglSwapBuffers(display_, eglWindow_) != EGL_TRUE) {
+                    LOG_ERROR("eglSwapBuffers failed, error: %{public}d", eglGetError());
+                }
+                return;
+            }
+        }
+
         const bool skiaReady =
             core_ != nullptr && !pixels_.empty() &&
             skc_render_raster(core_, pixels_.data(), width_ * 4, width_, height_);
@@ -362,6 +394,8 @@ private:
     int32_t width_ = 0;
     int32_t height_ = 0;
     float pixelRatio_ = 1.0f;
+    int32_t backend_ = 2; // 0=raster 1=gpu 2=auto
+    bool gpuAttached_ = false;
 
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLConfig config_ = nullptr;
@@ -525,6 +559,13 @@ void SetCanvasGLScene(const std::string &xComponentId, const std::string &sceneJ
     }
 }
 
+void SetCanvasGLBackend(const std::string &xComponentId, int32_t mode) {
+    CanvasGLRenderer *renderer = GetOrCreateRenderer(xComponentId);
+    if (renderer != nullptr) {
+        renderer->SetBackend(mode);
+    }
+}
+
 void SetCanvasGLPixelRatio(const std::string &xComponentId, float ratio) {
     CanvasGLRenderer *renderer = GetOrCreateRenderer(xComponentId);
     if (renderer != nullptr) {
@@ -597,6 +638,26 @@ napi_value NapiSetCanvasPixelRatio(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     SetCanvasGLPixelRatio(std::string(idBuffer, idLength), static_cast<float>(ratio));
+    return nullptr;
+}
+
+napi_value NapiSetCanvasBackend(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr};
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc < 2) {
+        LOG_ERROR("%{public}s", "setCanvasBackend: invalid arguments");
+        return nullptr;
+    }
+    char idBuffer[OH_XCOMPONENT_ID_LEN_MAX + 1] = {'\0'};
+    size_t idLength = 0;
+    if (napi_get_value_string_utf8(env, args[0], idBuffer, sizeof(idBuffer), &idLength) != napi_ok) {
+        return nullptr;
+    }
+    int32_t mode = 2;
+    if (napi_get_value_int32(env, args[1], &mode) != napi_ok) {
+        return nullptr;
+    }
+    SetCanvasGLBackend(std::string(idBuffer, idLength), mode);
     return nullptr;
 }
 

@@ -56,10 +56,34 @@ internal class CanvasGLViewAttr : Attr() {
         return this
     }
 
+    /**
+     * 选择绘制后端：
+     * - [CanvasBackend.AUTO]：GPU 可用则 GPU，否则回退 raster（默认）
+     * - [CanvasBackend.GPU]：优先 GPU，失败仍回退 raster
+     * - [CanvasBackend.RASTER]：强制 CPU 光栅化
+     */
+    fun backend(backend: String): CanvasGLViewAttr {
+        BACKEND with backend
+        return this
+    }
+
     companion object {
         const val CLEAR_COLOR = "clearColor"
         const val SCENE = "scene"
+        const val BACKEND = "backend"
     }
+}
+
+/**
+ * 绘制后端取值，与 `canvas_core.h` 的 `skc_backend` 对齐。
+ *
+ * 刻意用字符串常量而不是 enum：Kotlin/JS 对 internal enum 的 DCE 会丢掉未被
+ * 直接引用的枚举项（实测 CanvasBackend.RASTER 被编译成 AUTO），常量最稳。
+ */
+internal object CanvasBackend {
+    const val RASTER = "raster"
+    const val GPU = "gpu"
+    const val AUTO = "auto"
 }
 
 internal class CanvasGLViewEvent : Event() {

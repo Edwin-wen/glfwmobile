@@ -56,6 +56,11 @@ class CanvasGLView : IKuiklyRenderViewExport {
                 true
             }
 
+            BACKEND -> {
+                renderer.setBackend(propValue.unsafeCast<String>())
+                true
+            }
+
             ON_READY -> {
                 readyCallback = propValue.unsafeCast<KuiklyRenderCallback>()
                 notifyReady()
@@ -102,6 +107,7 @@ class CanvasGLView : IKuiklyRenderViewExport {
         const val VIEW_NAME = "CanvasGLView"
         private const val CLEAR_COLOR = "clearColor"
         private const val SCENE = "scene"
+        private const val BACKEND = "backend"
         private const val ON_READY = "onReady"
         private const val DEFAULT_CLEAR_COLOR = "#FFFF0000"
     }

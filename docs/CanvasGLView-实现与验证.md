@@ -15,11 +15,14 @@
 
 | 端 | 状态 | 实现 | 验证 |
 | --- | --- | --- | --- |
-| Android | **已迁移** | `View` + `Bitmap` + `canvas_core` 光栅化 | 模拟器实测纯红（截图有 P3 色彩管理偏移，系统 UI 同样偏移） |
-| iOS | **已迁移** | `UIView` + `CGImage`（`layer.contents`）+ `canvas_core` | `xcodebuild -sdk iphoneos` 编译链接通过（无模拟器 slice，需真机运行） |
-| 鸿蒙 | **已迁移** | `XComponent(SURFACE)` + EGL 纹理上传 + `canvas_core` | `hvigorw assembleHap` 产出签名 HAP，`libentry.so` 含 Skia 符号 |
-| H5 | **已迁移** | `<canvas>` + CanvasKit（Skia WASM） | 浏览器实测纯红，WebGL2 surface，无控制台错误 |
-| 小程序 | **已迁移** | `<canvas type="2d">` + Canvas2D 播放同一份 ops | 构建通过（`dist` 主包 1.4MB），需微信开发者工具验证 |
+| Android | **已迁移** | raster：`View` + `Bitmap`；gpu：`GLSurfaceView` + Ganesh | 模拟器实测两种后端均为纯红 |
+| iOS | **已迁移** | raster：`CGImage`；gpu：`CAEAGLLayer` + Ganesh（Skia 产物无 Metal 后端） | `xcodebuild -sdk iphoneos` 编译链接通过（需真机运行） |
+| 鸿蒙 | **已迁移** | raster：光栅化 + 纹理上传；gpu：EGL 内直接绘制 | `hvigorw assembleHap` 产出签名 HAP，含两种后端 |
+| H5 | **已迁移** | CanvasKit：WebGL / 软件 surface 可切 | 浏览器实测两种后端均为纯红 |
+| 小程序 | **已迁移** | `<canvas type="2d">` + Canvas2D（GPU 暂不支持） | 构建通过，需微信开发者工具验证 |
+
+- 后端开关：`CanvasGLView { attr { backend(CanvasBackend.RASTER / GPU / AUTO) } }`，
+  默认 AUTO（优先 GPU，失败回退 raster），细节见 9.5
 
 - 契约：`cppCore/canvasCore/include/canvas_core.h`（C ABI）+ `shared/.../canvas/CanvasScene.kt`（scene DSL）
 - 已支持 op：`clear` / `rect` / `line`；坐标统一为逻辑像素，物理像素由 dpr 换算
@@ -615,3 +618,81 @@ shared/commonMain           CanvasScene（scene DSL）
 | 2 | 鸿蒙 Skia 只提供 arm64 | 仅 arm64 设备/模拟器 |
 | 3 | 小程序用 Canvas2D 而非 CanvasKit | `blur/gradient/path` 等后续 op 需补 Canvas2D 实现或另开 WASM 方案 |
 | 4 | raster 为整帧重绘 | 动效场景需切 GPU 后端（Metal / EGL 直绘） |
+
+### 9.5 绘制后端开关（raster / gpu / auto）
+
+Kuikly 侧通过 `CanvasGLView { attr { backend(...) } }` 选择后端，五端同一套取值：
+
+| 值 | 行为 |
+| --- | --- |
+| `CanvasBackend.RASTER` | 强制 CPU 光栅化 |
+| `CanvasBackend.GPU` | 优先 GPU；attach 失败自动回退 raster |
+| `CanvasBackend.AUTO`（默认） | 同 GPU，失败回退 |
+
+```kotlin
+CanvasGLView {
+    attr {
+        absolutePositionAllZero()
+        size(ctx.pagerData.pageViewWidth, ctx.pagerData.pageViewHeight)
+        scene(CanvasScene.clear(0xFFFF0000))
+        backend(CanvasBackend.AUTO)
+    }
+}
+```
+
+> 刻意用字符串常量而不是 enum：Kotlin/JS 的 DCE 会丢掉未被直接引用的枚举项
+> （实测 `CanvasBackend.RASTER` 被编译成 `AUTO`），常量在 JVM/Native/JS 三端行为一致。
+
+各端实现：
+
+| 端 | raster | gpu | 回退 |
+| --- | --- | --- | --- |
+| Android | `View` + `Bitmap` + `skc_render_raster` | `GLSurfaceView` + `skc_attach_gl` + `skc_render_gl(FBO 0)` | attach 失败 → 换回 raster 子视图 |
+| iOS | `UIView` + `CGImage` | `CAEAGLLayer` + `skc_attach_eagl` + `skc_render_eagl` | attach/render 失败 → 隐藏 EAGL 层走 raster |
+| 鸿蒙 | Skia 光栅化 + GL 纹理上传 | EGL 上下文内 `skc_render_gl(FBO 0)` | attach/render 失败 → 继续纹理路径 |
+| H5 | CanvasKit `MakeSWCanvasSurface` | CanvasKit `MakeWebGLCanvasSurface` | WebGL 不可用 → 软件 surface → CSS 纯色 |
+| 小程序 | Canvas2D | 暂不支持（无 Skia 运行时） | 打 warning，保持 Canvas2D |
+
+C ABI 新增（`cppCore/canvasCore/include/canvas_core.h`）：
+
+```c
+typedef enum skc_backend { SKC_BACKEND_RASTER = 0, SKC_BACKEND_GPU = 1, SKC_BACKEND_AUTO = 2 } skc_backend;
+void        skc_set_backend(skc_canvas*, skc_backend);
+skc_backend skc_get_backend(const skc_canvas*);      /* 实际生效的后端 */
+const char* skc_backend_name(const skc_canvas*);     /* "raster" / "gpu" */
+
+bool skc_attach_gl(skc_canvas*);                     /* 调用线程需已 makeCurrent */
+bool skc_render_gl(skc_canvas*, uint32_t fbo_id, int32_t w, int32_t h);
+void skc_detach_gpu(skc_canvas*);
+
+/* iOS：把 CAEAGLLayer 交给 core，EAGLContext/FBO/present 全部在 core 内完成 */
+bool skc_attach_eagl(skc_canvas*, void* ca_eagl_layer);
+bool skc_render_eagl(skc_canvas*, int32_t w, int32_t h);
+```
+
+GPU 实现细节：
+
+- 原生三端共用 `src/gpu_surface_gl.cpp`（EGL）与 `src/gpu_surface_eagl.mm`（iOS）：
+  `GrDirectContexts::MakeGL/MakeEGL/MakeIOS` + `GrBackendRenderTargets::MakeGL` +
+  `SkSurfaces::WrapBackendRenderTarget`，每帧 `flushAndSubmit`。
+- 静态画面只在场景/尺寸变化时重绘，不跑渲染循环。
+- **iOS 的 Skia 构建没有 Metal 后端**（`libskia.a` 里只有 Ganesh GL/EAGL 符号），
+  因此 iOS GPU 走 EAGL 而非 Metal；后续若重编 Skia 开启 `skia_use_metal`，可只替换
+  `gpu_surface_eagl.mm` 为 Metal 实现，ABI 不变。
+- iOS 26 SDK 把 `OpenGLES/ES3/gl3.h` 改名为 `OpenGLES/ES3/gl.h`，pod 内已按新头文件名引用。
+
+验证结果（本机）：
+
+| 端 | raster | gpu |
+| --- | --- | --- |
+| Android 模拟器 | `render backend=raster`，纯红 | `render backend=gpu`，纯红 |
+| H5（headless Chrome） | canvas 2D context，纯红 | WebGL2，纯红 |
+| iOS | `xcodebuild` 通过 | `xcodebuild` 通过（需真机运行） |
+| 鸿蒙 | `assembleHap` 通过 | `assembleHap` 通过（含 `skc_attach_gl`/`skc_render_gl`） |
+| 小程序 | 构建通过（Canvas2D） | 不支持，运行时 warning |
+
+### 9.6 H5 构建顺序修正
+
+`publishLocalJSBundle` 里原本在配置阶段就拷贝 `nativevue2.zip`，会拿到上一轮产物
+（表现为「改了 commonMain 但页面行为不变」）。现已改为 `doFirst` 执行拷贝，
+依赖任务先跑完再取产物。

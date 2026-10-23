@@ -62,6 +62,15 @@ class CanvasGLView : IKuiklyRenderViewExport {
                 true
             }
 
+            BACKEND -> {
+                val backend = propValue.unsafeCast<String>()
+                if (backend == "gpu") {
+                    // 小程序当前只有 Canvas2D 播放器：GPU（Skia/WebGL）需 CanvasKit + WXWebAssembly，暂不支持
+                    Log.warn(TAG, "gpu backend is not available on miniApp, keep Canvas2D")
+                }
+                true
+            }
+
             ON_READY -> {
                 readyCallback = propValue.unsafeCast<KuiklyRenderCallback>()
                 if (readyNotified) {
@@ -225,6 +234,7 @@ class CanvasGLView : IKuiklyRenderViewExport {
         private const val TAG = "CanvasGLView"
         private const val CLEAR_COLOR = "clearColor"
         private const val SCENE = "scene"
+        private const val BACKEND = "backend"
         private const val ON_READY = "onReady"
         private const val DEFAULT_CLEAR_COLOR = "#FFFF0000"
         private const val DEFAULT_CLEAR_COLOR_VALUE = 0xFFFF0000L

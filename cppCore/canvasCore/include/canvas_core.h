@@ -20,11 +20,30 @@ extern "C" {
 
 typedef struct skc_canvas skc_canvas;
 
-/** 创建画布，失败返回 NULL */
+/** 绘制后端：raster 走 CPU 光栅化，gpu 走 Skia Ganesh（EGL / EAGL） */
+typedef enum skc_backend {
+    SKC_BACKEND_RASTER = 0,
+    SKC_BACKEND_GPU = 1,
+    SKC_BACKEND_AUTO = 2,
+} skc_backend;
+
+/** 创建画布，失败返回 NULL（默认后端为 AUTO：GPU 可用则用 GPU，否则回退 raster） */
 skc_canvas *skc_create(void);
 
 /** 销毁画布，允许传 NULL */
 void skc_destroy(skc_canvas *canvas);
+
+/**
+ * 设置期望的后端。RASTER 会立即切回 CPU；GPU/AUTO 需要平台随后调用
+ * skc_attach_gl（且当前线程已绑定 GL 上下文），失败会自动回退 raster。
+ */
+void skc_set_backend(skc_canvas *canvas, skc_backend backend);
+
+/** 实际生效的后端（GPU attach 失败时会返回 SKC_BACKEND_RASTER） */
+skc_backend skc_get_backend(const skc_canvas *canvas);
+
+/** 实际生效的后端名："raster" / "gpu"，便于各端日志与 UI 展示 */
+const char *skc_backend_name(const skc_canvas *canvas);
 
 /**
  * 设置物理尺寸与像素密度。width/height 为物理像素，dpr 用于把 scene 的逻辑坐标
@@ -52,6 +71,31 @@ bool skc_render_raster(skc_canvas *canvas,
                        int32_t row_bytes,
                        int32_t width,
                        int32_t height);
+
+/**
+ * 创建/复用 GPU 绘制上下文。调用线程必须已绑定 GL 上下文（Android/鸿蒙为
+ * EGLContext 已 makeCurrent，iOS 为 EAGLContext 已 setCurrentContext）。
+ * 返回 false 表示 GPU 不可用（调用方应继续走 skc_render_raster）。
+ */
+bool skc_attach_gl(skc_canvas *canvas);
+
+/**
+ * 用 GPU 直接绘制到指定帧缓冲（通常是 EGLSurface 的默认 FBO 0，iOS 为自建 FBO）。
+ * width/height 为物理像素；返回 false 表示未 attach 或绘制失败，调用方需回退 raster。
+ */
+bool skc_render_gl(skc_canvas *canvas, uint32_t fbo_id, int32_t width, int32_t height);
+
+/**
+ * iOS：把 CAEAGLLayer 交给 canvas_core，由 core 创建 EAGLContext / renderbuffer / FBO
+ * 并负责 present。其它平台返回 false。
+ */
+bool skc_attach_eagl(skc_canvas *canvas, void *ca_eagl_layer);
+
+/** iOS：用 EAGL 后端绘制一帧并 present；等价于 skc_render_gl(canvas, 0, w, h) */
+bool skc_render_eagl(skc_canvas *canvas, int32_t width, int32_t height);
+
+/** 释放 GPU 上下文，后续调用 skc_render_gl 会返回 false */
+void skc_detach_gpu(skc_canvas *canvas);
 
 /** 最近一次错误信息；无错误时返回空串（不返回 NULL） */
 const char *skc_last_error(const skc_canvas *canvas);

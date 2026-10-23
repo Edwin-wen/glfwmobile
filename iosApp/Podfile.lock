@@ -24,7 +24,7 @@ EXTERNAL SOURCES:
     :path: "../shared"
 
 SPEC CHECKSUMS:
-  canvas_core: a0619c08c4340315a38b6b8d1185c1a77ea34a3f
+  canvas_core: e4f400403115f9304a3bb928d0ff11dd8f9b85b0
   OpenKuiklyIOSRender: 2e6f7be3adae40f8167bb56a3e6803d1b18fd16e
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   shared: 45c4d5a3fe6bf89e105d0ff0f3587f64ad21dd48

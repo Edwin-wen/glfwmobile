@@ -23,13 +23,17 @@ void SetCanvasGLClearColor(const std::string &xComponentId, const std::string &c
 /** 设置指定 XComponent 的绘制指令（JSON，格式见 shared 侧 CanvasScene） */
 void SetCanvasGLScene(const std::string &xComponentId, const std::string &sceneJson);
 
-/** 设置像素密度（XComponent 尺寸是物理像素，scene 坐标是 vp） */
+/** 设置指定 XComponent 的像素密度（XComponent 尺寸是物理像素，scene 坐标是 vp） */
 void SetCanvasGLPixelRatio(const std::string &xComponentId, float ratio);
+
+/** 设置绘制后端：0=raster 1=gpu 2=auto */
+void SetCanvasGLBackend(const std::string &xComponentId, int32_t mode);
 
 /** napi 导出 */
 napi_value NapiSetCanvasClearColor(napi_env env, napi_callback_info info);
 napi_value NapiSetCanvasScene(napi_env env, napi_callback_info info);
 napi_value NapiSetCanvasPixelRatio(napi_env env, napi_callback_info info);
+napi_value NapiSetCanvasBackend(napi_env env, napi_callback_info info);
 
 /** 释放全部渲染资源 */
 void ReleaseAllCanvasGLRenderers();

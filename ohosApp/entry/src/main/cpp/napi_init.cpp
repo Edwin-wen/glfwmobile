@@ -18,7 +18,8 @@ static napi_value Init(napi_env env, napi_value exports)
         {"initKuikly", nullptr, InitKuikly, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setCanvasClearColor", nullptr, NapiSetCanvasClearColor, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setCanvasScene", nullptr, NapiSetCanvasScene, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"setCanvasPixelRatio", nullptr, NapiSetCanvasPixelRatio, nullptr, nullptr, nullptr, napi_default, nullptr}
+        {"setCanvasPixelRatio", nullptr, NapiSetCanvasPixelRatio, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setCanvasBackend", nullptr, NapiSetCanvasBackend, nullptr, nullptr, nullptr, napi_default, nullptr}
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

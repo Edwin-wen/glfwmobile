@@ -22,6 +22,7 @@ public class CanvasKitRenderer(
 
     private var ops: List<WebSceneOp> = emptyList()
     private var fallbackColor: Long = DEFAULT_CLEAR_COLOR
+    private var backend: String = "auto"
     private var width: Int = 0
     private var height: Int = 0
     private var surfaceWidth: Int = 0
@@ -43,6 +44,19 @@ public class CanvasKitRenderer(
 
     fun setFallbackColor(color: Long) {
         fallbackColor = color
+        render()
+    }
+
+    /** 后端：raster 走 CPU surface，gpu/auto 优先 WebGL */
+    fun setBackend(backend: String) {
+        if (backend == this.backend) {
+            return
+        }
+        this.backend = backend
+        surface?.delete()
+        surface = null
+        surfaceWidth = 0
+        surfaceHeight = 0
         render()
     }
 
@@ -147,7 +161,10 @@ public class CanvasKitRenderer(
         canvas.width = pixelWidth
         canvas.height = pixelHeight
         surface = try {
-            instance.MakeWebGLCanvasSurface(canvas) ?: instance.MakeSWCanvasSurface(canvas)
+            when (backend) {
+                "raster" -> instance.MakeSWCanvasSurface(canvas)
+                else -> instance.MakeWebGLCanvasSurface(canvas) ?: instance.MakeSWCanvasSurface(canvas)
+            }
         } catch (e: dynamic) {
             null
         }

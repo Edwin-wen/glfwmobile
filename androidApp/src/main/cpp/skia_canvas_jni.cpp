@@ -25,14 +25,14 @@ void LogError(const char *message, const char *detail) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeCreate(JNIEnv *env, jobject thiz) {
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeCreate(JNIEnv *env, jobject thiz) {
     (void)env;
     (void)thiz;
     return reinterpret_cast<jlong>(skc_create());
 }
 
 JNIEXPORT void JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeDestroy(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeDestroy(JNIEnv *env, jobject thiz,
                                                                 jlong handle) {
     (void)env;
     (void)thiz;
@@ -40,7 +40,7 @@ Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeDestroy(JNIEnv *env, job
 }
 
 JNIEXPORT void JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetSize(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeSetSize(JNIEnv *env, jobject thiz,
                                                                 jlong handle, jint width,
                                                                 jint height, jfloat dpr) {
     (void)env;
@@ -49,7 +49,7 @@ Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetSize(JNIEnv *env, job
 }
 
 JNIEXPORT void JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetClearColor(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeSetClearColor(JNIEnv *env, jobject thiz,
                                                                       jlong handle, jint argb) {
     (void)env;
     (void)thiz;
@@ -57,7 +57,7 @@ Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetClearColor(JNIEnv *en
 }
 
 JNIEXPORT void JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetScene(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeSetScene(JNIEnv *env, jobject thiz,
                                                                  jlong handle, jstring scene) {
     (void)thiz;
     skc_canvas *canvas = FromHandle(handle);
@@ -77,7 +77,7 @@ Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeSetScene(JNIEnv *env, jo
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeRenderBitmap(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeRenderBitmap(JNIEnv *env, jobject thiz,
                                                                      jlong handle, jobject bitmap) {
     (void)env;
     (void)thiz;
@@ -114,8 +114,65 @@ Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeRenderBitmap(JNIEnv *env
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeSetBackend(JNIEnv *env, jobject thiz,
+                                                                   jlong handle, jint backend) {
+    (void)env;
+    (void)thiz;
+    skc_set_backend(FromHandle(handle), static_cast<skc_backend>(backend));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeBackendInUse(JNIEnv *env, jobject thiz,
+                                                                     jlong handle) {
+    (void)env;
+    (void)thiz;
+    return static_cast<jint>(skc_get_backend(FromHandle(handle)));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeAttachGl(JNIEnv *env, jobject thiz,
+                                                                 jlong handle) {
+    (void)env;
+    (void)thiz;
+    skc_canvas *canvas = FromHandle(handle);
+    if (canvas == nullptr) {
+        return JNI_FALSE;
+    }
+    const bool attached = skc_attach_gl(canvas);
+    if (!attached) {
+        LogError("attach GL failed", skc_last_error(canvas));
+    }
+    return attached ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeRenderGl(JNIEnv *env, jobject thiz,
+                                                                 jlong handle, jint fbo_id,
+                                                                 jint width, jint height) {
+    (void)env;
+    (void)thiz;
+    skc_canvas *canvas = FromHandle(handle);
+    if (canvas == nullptr) {
+        return JNI_FALSE;
+    }
+    const bool ok = skc_render_gl(canvas, static_cast<uint32_t>(fbo_id), width, height);
+    if (!ok) {
+        LogError("render GL failed", skc_last_error(canvas));
+    }
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeDetachGpu(JNIEnv *env, jobject thiz,
+                                                                  jlong handle) {
+    (void)env;
+    (void)thiz;
+    skc_detach_gpu(FromHandle(handle));
+}
+
 JNIEXPORT jstring JNICALL
-Java_com_edwin_glfwmobile_expandview_CanvasGLView_nativeLastError(JNIEnv *env, jobject thiz,
+Java_com_edwin_glfwmobile_expandview_CanvasNative_nativeLastError(JNIEnv *env, jobject thiz,
                                                                   jlong handle) {
     (void)thiz;
     return env->NewStringUTF(skc_last_error(FromHandle(handle)));

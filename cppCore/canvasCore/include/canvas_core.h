@@ -33,7 +33,8 @@ void skc_destroy(skc_canvas *canvas);
 void skc_set_size(skc_canvas *canvas, int32_t width, int32_t height, float dpr);
 
 /**
- * 设置场景（display list）。scene_json 为 UTF-8 JSON，格式见 canvasCore/README.md。
+ * 设置场景（display list）。scene_json 为 UTF-8 JSON，编码规则见
+ * `shared/src/commonMain/kotlin/com/edwin/glfwmobile/canvas/CanvasScene.kt`。
  * 解析失败时保留上一帧场景，可通过 skc_last_error 拿到原因。
  */
 void skc_set_scene(skc_canvas *canvas, const char *scene_json);

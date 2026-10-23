@@ -1,7 +1,8 @@
 /*
  * scene 解析器宿主机单测（不依赖 Skia，可直接用 clang++ 编译运行）：
- *   clang++ -std=c++17 -IcanvasCore/src -IcanvasCore/third_party \
- *       canvasCore/tests/scene_test.cpp canvasCore/src/scene.cpp -o /tmp/scene_test && /tmp/scene_test
+ *   clang++ -std=c++17 -IcppCore/canvasCore/src -IcppCore/canvasCore/third_party \
+ *       cppCore/canvasCore/tests/scene_test.cpp cppCore/canvasCore/src/scene.cpp \
+ *       -o /tmp/scene_test && /tmp/scene_test
  */
 #include <cstdio>
 #include <string>

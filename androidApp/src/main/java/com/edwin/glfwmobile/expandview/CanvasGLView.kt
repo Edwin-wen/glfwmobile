@@ -16,7 +16,7 @@ import com.tencent.kuikly.core.render.android.export.KuiklyRenderCallback
  * 2. 管理一块 RGBA Bitmap 内存；
  * 3. 把画好的 Bitmap 提交给系统渲染。
  *
- * 真正的绘制逻辑在 `canvasCore/`（C++ / Skia），与 iOS、鸿蒙共用同一份实现；
+ * 真正的绘制逻辑在 `cppCore/canvasCore/`（C++ / Skia），与 iOS、鸿蒙共用同一份实现；
  * 组件注册名 [VIEW_NAME] 必须与 Kuikly 侧 `CanvasGLView.viewName()` 一致。
  */
 class CanvasGLView(context: Context) : View(context), IKuiklyRenderViewExport {

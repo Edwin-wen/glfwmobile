@@ -11,15 +11,15 @@
 ## 零、当前进度（绘制统一到 Skia）
 
 桥接链路已在五端跑通之后，绘制实现开始收敛到 **Skia**：业务侧只产出一份「场景指令」，原生端由
-`canvasCore/`（C++ / Skia）播放，Web 端由 CanvasKit（Skia 的 WASM 构建）播放。
+`cppCore/canvasCore/`（C++ / Skia）播放，Web 端由 CanvasKit（Skia 的 WASM 构建）播放。
 
 | 端 | 状态 | 说明 |
 | --- | --- | --- |
-| Android | **已迁移** | `View` + `Bitmap` + `canvasCore` 光栅化，`?page_name=canvas` 实测 `#FF0000` |
+| Android | **已迁移** | `View` + `Bitmap` + `cppCore/canvasCore` 光栅化，`?page_name=canvas` 实测 `#FF0000` |
 | iOS / 鸿蒙 | 待迁移 | 仍为本文档描述的 GL / Metal 清屏实现 |
 | H5 / 小程序 | 待迁移 | 仍为 WebGL 清屏实现；忽略新增的 `scene` 属性 |
 
-- 契约：`canvasCore/include/canvas_core.h`（C ABI）+ `shared/.../canvas/CanvasScene.kt`（scene DSL）
+- 契约：`cppCore/canvasCore/include/canvas_core.h`（C ABI）+ `shared/.../canvas/CanvasScene.kt`（scene DSL）
 - 已支持 op：`clear` / `rect` / `line`；坐标统一为逻辑像素，物理像素由 dpr 换算
 - 下文 4.1–4.5 描述的是**迁移前**的各端实现，作为后续端迁移的参考基线
 

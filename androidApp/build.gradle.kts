@@ -6,11 +6,11 @@ plugins {
 /**
  * Skia 静态库所在目录（含 include/ 与 lib/libskia.a）。
  * 优先取 gradle 属性 `skia.android.dir` / 环境变量 `SKIA_ANDROID_DIR`，
- * 缺省回落到本机 vcpkg 的 arm64-android 安装目录。
+ * 缺省使用项目内 vcpkg 的 arm64-android 产物。
  */
 val skiaAndroidDir: String = providers.gradleProperty("skia.android.dir").orNull
     ?: System.getenv("SKIA_ANDROID_DIR")
-    ?: "${System.getProperty("user.home")}/ENV/vcpkg/installed/arm64-android"
+    ?: "${rootDir}/vcpkg/installed/android/arm64-android"
 
 android {
     namespace = "com.edwin.glfwmobile"

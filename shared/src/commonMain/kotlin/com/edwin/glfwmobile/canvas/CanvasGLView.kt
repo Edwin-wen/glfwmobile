@@ -9,7 +9,7 @@ import com.tencent.kuikly.core.base.event.Event
  * Skia 画布视图（Kuikly 侧组件契约）。
  *
  * 业务层只声明「画什么」（[CanvasScene]），绘制由统一实现承接：
- * - 原生三端（Android / iOS / 鸿蒙）：`canvasCore`（C++ / Skia，一份代码三端复用）
+ * - 原生三端（Android / iOS / 鸿蒙）：`cppCore/canvasCore`（C++ / Skia，一份代码三端复用）
  * - Web 两端（H5 / 微信小程序）：CanvasKit（Skia 的 WASM 构建）
  *
  * 各端通过 [VIEW_NAME] 关联到自己的宿主壳，壳里只保留表面管理与桥接调用。

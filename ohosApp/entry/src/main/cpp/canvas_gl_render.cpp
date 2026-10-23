@@ -68,13 +68,7 @@ public:
     }
 
     ~CanvasGLRenderer() {
-        DestroyGLResources();
-        DestroySurface();
-        Terminate();
-        if (core_ != nullptr) {
-            skc_destroy(core_);
-            core_ = nullptr;
-        }
+        Shutdown();
     }
 
     void SetClearColor(const float *color) {
@@ -107,8 +101,10 @@ public:
     /** mode: 0=raster 1=gpu 2=auto */
     void SetBackend(int32_t mode) {
         backend_ = mode;
+        gpuAttachFailed_ = false;
         if (mode == 0) {
-            gpuAttached_ = false;
+            // 切回 CPU 时立刻回收 Skia GPU 上下文，避免它悬到 Surface 销毁之后
+            ReleaseGpuContext();
             if (core_ != nullptr) {
                 skc_set_backend(core_, SKC_BACKEND_RASTER);
             }
@@ -125,6 +121,16 @@ public:
         }
         if (!EnsureEGL()) {
             return;
+        }
+        shutDown_ = false;
+        gpuAttachFailed_ = false;
+        if (core_ == nullptr) {
+            core_ = skc_create();
+        }
+        // 同一个 renderer 被复用（Surface 重建）时，先按序释放旧资源
+        ReleaseGpuContext();
+        if (MakeCurrent()) {
+            DestroyGLResources();
         }
         DestroySurface();
         eglWindow_ = eglCreateWindowSurface(display_, config_,
@@ -168,12 +174,17 @@ public:
                 skc_set_size(core_, width_, height_, pixelRatio_);
             }
         }
+        if (!MakeCurrent()) {
+            return;
+        }
         glViewport(0, 0, width_, height_);
         DrawFrame();
     }
 
     void OnSurfaceDestroyed() {
-        DestroySurface();
+        // XComponent 销毁时 EGLSurface/Context 仍然有效，这是唯一能安全释放 Skia GPU 的窗口。
+        // 拖到 RemoveRenderer 的析构里再做，就只能在 EGL 全销毁之后调用 GL，必然卡驱动。
+        Shutdown();
     }
 
 private:
@@ -297,13 +308,19 @@ private:
         if (eglWindow_ == EGL_NO_SURFACE || width_ <= 0 || height_ <= 0) {
             return;
         }
+        // 同一 UI 线程上多个 XComponent 的 EGLContext 会互相抢占，
+        // 任何 GL / Skia-GL 调用前都必须先把自己的现场切回来。
+        if (!MakeCurrent()) {
+            return;
+        }
 
         // 优先 GPU：Skia Ganesh 直接画到 EGLSurface 的默认帧缓冲（FBO 0）
         if (backend_ != 0 && core_ != nullptr) {
-            if (!gpuAttached_) {
+            if (!gpuAttached_ && !gpuAttachFailed_) {
                 skc_set_backend(core_, static_cast<skc_backend>(backend_));
                 gpuAttached_ = skc_attach_gl(core_);
                 if (!gpuAttached_) {
+                    gpuAttachFailed_ = true;
                     LOG_ERROR("gpu attach failed: %{public}s", skc_last_error(core_));
                 }
             }
@@ -340,6 +357,67 @@ private:
         if (eglSwapBuffers(display_, eglWindow_) != EGL_TRUE) {
             LOG_ERROR("eglSwapBuffers failed, error: %{public}d", eglGetError());
         }
+    }
+
+    /**
+     * 把本 renderer 的 EGL 现场切回当前线程。
+     * 同一 UI 线程上多个 XComponent 各自持有 EGLContext，后创建的那个会成为 current，
+     * 因此任何 GL 调用前都要显式切回，否则会操作到别的画布的上下文。
+     */
+    bool MakeCurrent() {
+        if (display_ == EGL_NO_DISPLAY || context_ == EGL_NO_CONTEXT ||
+            eglWindow_ == EGL_NO_SURFACE) {
+            return false;
+        }
+        if (eglGetCurrentContext() == context_ &&
+            eglGetCurrentSurface(EGL_DRAW) == eglWindow_) {
+            return true;
+        }
+        return eglMakeCurrent(display_, eglWindow_, eglWindow_, context_) == EGL_TRUE;
+    }
+
+    /**
+     * 释放 Skia GPU 上下文。
+     * GrDirectContext 的默认析构会 flush + submit 未提交的绘制，必须在自己的 GL 现场下执行；
+     * 现场不可用时只能 abandon（不发起任何 GL 调用），否则会卡在驱动里。
+     */
+    void ReleaseGpuContext() {
+        gpuAttached_ = false;
+        if (core_ == nullptr) {
+            return;
+        }
+        if (MakeCurrent()) {
+            skc_detach_gpu(core_);
+        } else {
+            skc_abandon_gpu(core_);
+        }
+    }
+
+    /**
+     * 释放顺序必须与创建严格相反：Skia GPU → 自建 GL 对象 → EGLSurface → EGLContext。
+     *
+     * 旧实现是 EGL 先销毁、Skia 最后析构：GrDirectContext 在无合法 context 的情况下
+     * flush/submit，阻塞在 glGetError/驱动内 >8s，表现为页面切换瞬间的 APP_INPUT_BLOCK。
+     */
+    void Shutdown() {
+        if (shutDown_) {
+            return;
+        }
+        shutDown_ = true;
+
+        ReleaseGpuContext();
+        if (MakeCurrent()) {
+            DestroyGLResources();
+        }
+        DestroySurface();
+        Terminate();
+        if (core_ != nullptr) {
+            skc_destroy(core_);
+            core_ = nullptr;
+        }
+        std::vector<uint8_t>().swap(pixels_);
+        width_ = 0;
+        height_ = 0;
     }
 
     void DestroyGLResources() {
@@ -384,7 +462,7 @@ private:
             eglDestroyContext(display_, context_);
             context_ = EGL_NO_CONTEXT;
         }
-        eglTerminate(display_);
+        // 不调用 eglTerminate：EGLDisplay 是进程级共享的，它会连带销毁其它 XComponent 的上下文
         display_ = EGL_NO_DISPLAY;
         config_ = nullptr;
     }
@@ -396,6 +474,9 @@ private:
     float pixelRatio_ = 1.0f;
     int32_t backend_ = 2; // 0=raster 1=gpu 2=auto
     bool gpuAttached_ = false;
+    // attach 失败后不再每一帧重试，避免反复创建/析构 GrDirectContext
+    bool gpuAttachFailed_ = false;
+    bool shutDown_ = false;
 
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLConfig config_ = nullptr;
@@ -438,9 +519,24 @@ CanvasGLRenderer *GetOrCreateRenderer(const std::string &id) {
     return renderer.get();
 }
 
-void RemoveRenderer(const std::string &id) {
+CanvasGLRenderer *FindRenderer(const std::string &id) {
     std::lock_guard<std::mutex> lock(g_rendererMutex);
-    g_renderers.erase(id);
+    const auto it = g_renderers.find(id);
+    return it == g_renderers.end() ? nullptr : it->second.get();
+}
+
+void RemoveRenderer(const std::string &id) {
+    std::unique_ptr<CanvasGLRenderer> removed;
+    {
+        std::lock_guard<std::mutex> lock(g_rendererMutex);
+        const auto it = g_renderers.find(id);
+        if (it == g_renderers.end()) {
+            return;
+        }
+        removed = std::move(it->second);
+        g_renderers.erase(it);
+    }
+    // removed 在锁外析构：Shutdown 可能等待 GL 驱动，不能占着全局锁
 }
 
 bool ParseHexColor(const std::string &color, float *out) {
@@ -497,7 +593,8 @@ void OnSurfaceChangedCB(OH_NativeXComponent *component, void *window) {
 void OnSurfaceDestroyedCB(OH_NativeXComponent *component, void *window) {
     (void)window;
     const std::string id = GetXComponentId(component);
-    CanvasGLRenderer *renderer = GetOrCreateRenderer(id);
+    // 不能用 GetOrCreate：销毁回调不应该凭空造一个 renderer 再析构
+    CanvasGLRenderer *renderer = FindRenderer(id);
     if (renderer != nullptr) {
         renderer->OnSurfaceDestroyed();
     }
